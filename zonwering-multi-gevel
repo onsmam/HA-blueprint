@@ -118,7 +118,8 @@ blueprint:
               unit_of_measurement: "°"
               mode: slider
         facade_a_sun_window:
-          name: "Zonvenster breedte gevel A"
+          name: "Zonvenster afwijking (±) gevel A"
+          description: "Maximale afwijking van de azimuth, aan beide kanten. Bij azimuth 160° en 80° hier staat het venster dus van 80° tot 240°."
           default: 80
           selector:
             number:
@@ -204,7 +205,8 @@ blueprint:
               unit_of_measurement: "°"
               mode: slider
         facade_b_sun_window:
-          name: "Zonvenster breedte gevel B"
+          name: "Zonvenster afwijking (±) gevel B"
+          description: "Maximale afwijking van de azimuth, aan beide kanten. Bij azimuth 340° en 80° hier staat het venster dus van 260° tot 60°."
           default: 80
           selector:
             number:
@@ -305,7 +307,7 @@ variables:
 
   v_facade_a_in_window: >
     {% set diff = ((states(azimuth_entity) | float(0) - facade_a_azimuth | float + 180) % 360) - 180 %}
-    {{ (diff | abs) <= (facade_a_sun_window | float / 2)
+    {{ (diff | abs) <= (facade_a_sun_window | float)
        and (states(elevation_entity) | float(-90) >= facade_a_min_elevation | float) }}
 
   v_facade_a_rain_active: "{{ v_raining | bool and facade_a_react_to_rain | bool }}"
@@ -351,7 +353,7 @@ variables:
 
   v_facade_b_in_window: >
     {% set diff = ((states(azimuth_entity) | float(0) - facade_b_azimuth | float + 180) % 360) - 180 %}
-    {{ (diff | abs) <= (facade_b_sun_window | float / 2)
+    {{ (diff | abs) <= (facade_b_sun_window | float)
        and (states(elevation_entity) | float(-90) >= facade_b_min_elevation | float) }}
 
   v_facade_b_rain_active: "{{ v_raining | bool and facade_b_react_to_rain | bool }}"
