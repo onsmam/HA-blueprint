@@ -417,6 +417,13 @@ action:
         alias: "Cover-positie moet nog wijzigen - gevel A"
         value_template: "{{ v_facade_a_needs_move | bool }}"
     then:
+      - service: logbook.log
+        alias: "Log reden - gevel A"
+        data:
+          name: "Zonwering gevel A"
+          message: >
+            gaat naar {{ 'dicht' if v_facade_a_force_close | bool else 'open' }}
+            (positie {{ v_facade_a_target }}) - reden: {{ v_facade_a_reason }}
       - service: cover.set_cover_position
         target:
           entity_id: !input facade_a_covers
@@ -444,6 +451,13 @@ action:
         alias: "Cover-positie moet nog wijzigen - gevel B"
         value_template: "{{ v_facade_b_needs_move | bool }}"
     then:
+      - service: logbook.log
+        alias: "Log reden - gevel B"
+        data:
+          name: "Zonwering gevel B"
+          message: >
+            gaat naar {{ 'dicht' if v_facade_b_force_close | bool else 'open' }}
+            (positie {{ v_facade_b_target }}) - reden: {{ v_facade_b_reason }}
       - service: cover.set_cover_position
         target:
           entity_id: !input facade_b_covers
