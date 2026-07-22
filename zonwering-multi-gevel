@@ -72,6 +72,12 @@ blueprint:
       icon: mdi:home
       collapsed: false
       input:
+        facade_a_enabled:
+          name: "Gevel A actief"
+          description: "Zet uit om deze gevel volledig te negeren; de covers worden dan niet aangestuurd."
+          default: true
+          selector:
+            boolean: {}
         facade_a_covers:
           name: "Zonwering gevel A"
           default: []
@@ -148,6 +154,12 @@ blueprint:
       icon: mdi:home-outline
       collapsed: false
       input:
+        facade_b_enabled:
+          name: "Gevel B actief"
+          description: "Zet uit om deze gevel volledig te negeren; de covers worden dan niet aangestuurd."
+          default: true
+          selector:
+            boolean: {}
         facade_b_covers:
           name: "Zonwering gevel B"
           default: []
@@ -250,6 +262,7 @@ variables:
   azimuth_entity: !input azimuth_entity
   elevation_entity: !input elevation_entity
 
+  facade_a_enabled: !input facade_a_enabled
   facade_a_covers: !input facade_a_covers
   facade_a_azimuth: !input facade_a_azimuth
   facade_a_min_elevation: !input facade_a_min_elevation
@@ -258,6 +271,7 @@ variables:
   facade_a_closed_position: !input facade_a_closed_position
   facade_a_open_position: !input facade_a_open_position
 
+  facade_b_enabled: !input facade_b_enabled
   facade_b_covers: !input facade_b_covers
   facade_b_azimuth: !input facade_b_azimuth
   facade_b_min_elevation: !input facade_b_min_elevation
@@ -357,7 +371,8 @@ action:
   - if:
       - condition: template
         value_template: >
-          {{ facade_a_covers | length > 0
+          {{ facade_a_enabled | bool
+             and facade_a_covers | length > 0
              and not v_facade_a_override_active | bool
              and (v_facade_a_cooldown_ok | bool or v_raining | bool)
              and v_facade_a_needs_move | bool }}
@@ -374,7 +389,8 @@ action:
   - if:
       - condition: template
         value_template: >
-          {{ facade_b_covers | length > 0
+          {{ facade_b_enabled | bool
+             and facade_b_covers | length > 0
              and not v_facade_b_override_active | bool
              and (v_facade_b_cooldown_ok | bool or v_raining | bool)
              and v_facade_b_needs_move | bool }}
