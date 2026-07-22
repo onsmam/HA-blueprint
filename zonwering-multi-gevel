@@ -30,6 +30,28 @@ blueprint:
         entity:
           domain: sensor
 
+    azimuth_entity:
+      name: "🧭 Zon-azimuth sensor"
+      description: >
+        Sensor met de actuele zonsazimuth in graden. Wordt gebruikt i.p.v.
+        sun.sun en triggert de automation direct bij wijziging, zodat er
+        niet op een tijd-polling gewacht hoeft te worden.
+      default: sensor.sun_solar_azimuth
+      selector:
+        entity:
+          domain: sensor
+
+    elevation_entity:
+      name: "🧭 Zon-elevatie sensor"
+      description: >
+        Sensor met de actuele zonshoogte (elevatie) in graden. Wordt
+        gebruikt i.p.v. sun.sun en triggert de automation direct bij
+        wijziging.
+      default: sensor.sun_solar_elevation
+      selector:
+        entity:
+          domain: sensor
+
     radiation_threshold:
       name: "☁️ Stralingsdrempel bij bewolkt"
       description: >
@@ -213,6 +235,12 @@ trigger:
   - platform: state
     entity_id: !input radiation_entity
     id: radiation
+  - platform: state
+    entity_id: !input azimuth_entity
+    id: azimuth
+  - platform: state
+    entity_id: !input elevation_entity
+    id: elevation
   - platform: homeassistant
     event: start
     id: ha_start
@@ -222,6 +250,8 @@ variables:
   weather_entity: !input weather_entity
   radiation_entity: !input radiation_entity
   radiation_threshold: !input radiation_threshold
+  azimuth_entity: !input azimuth_entity
+  elevation_entity: !input elevation_entity
 
   facade_a_covers: !input facade_a_covers
   facade_a_azimuth: !input facade_a_azimuth
@@ -248,9 +278,9 @@ variables:
        or (w == 'cloudy' and rad >= radiation_threshold | float) }}
 
   v_facade_a_in_window: >
-    {% set diff = ((state_attr('sun.sun','azimuth') | float(0) - facade_a_azimuth | float + 180) % 360) - 180 %}
+    {% set diff = ((states(azimuth_entity) | float(0) - facade_a_azimuth | float + 180) % 360) - 180 %}
     {{ (diff | abs) <= (facade_a_sun_window | float / 2)
-       and (state_attr('sun.sun','elevation') | float(-90) >= facade_a_min_elevation | float) }}
+       and (states(elevation_entity) | float(-90) >= facade_a_min_elevation | float) }}
 
   v_facade_a_should_close: "{{ (not v_raining | bool) and v_facade_a_in_window | bool and v_weather_ok | bool }}"
   v_facade_a_target: "{{ facade_a_closed_position | int if v_facade_a_should_close | bool else facade_a_open_position | int }}"
@@ -286,9 +316,9 @@ variables:
     {{ ns.needs }}
 
   v_facade_b_in_window: >
-    {% set diff = ((state_attr('sun.sun','azimuth') | float(0) - facade_b_azimuth | float + 180) % 360) - 180 %}
+    {% set diff = ((states(azimuth_entity) | float(0) - facade_b_azimuth | float + 180) % 360) - 180 %}
     {{ (diff | abs) <= (facade_b_sun_window | float / 2)
-       and (state_attr('sun.sun','elevation') | float(-90) >= facade_b_min_elevation | float) }}
+       and (states(elevation_entity) | float(-90) >= facade_b_min_elevation | float) }}
 
   v_facade_b_should_close: "{{ (not v_raining | bool) and v_facade_b_in_window | bool and v_weather_ok | bool }}"
   v_facade_b_target: "{{ facade_b_closed_position | int if v_facade_b_should_close | bool else facade_b_open_position | int }}"
