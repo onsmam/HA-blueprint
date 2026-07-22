@@ -9,11 +9,14 @@ blueprint:
     drempel, of bij partlycloudy/sunny). Zakt de straling bij bewolkt weer
     onder de drempel terwijl de zon nog in het venster staat, dan wordt er
     niet geforceerd open gegaan - de zonwering blijft dan gewoon staan.
-    Cooldown per gevel voorkomt pendelen. Handmatige bediening blokkeert
-    alleen de betreffende gevel voor de rest van de dag - gedetecteerd via
-    context.user_id + last_updated, dus geen extra input_boolean helpers
-    nodig. Elke gevel heeft een v_facade_x_reason variabele die in de
-    automation-trace zichtbaar is en toont waarom er wel/niet bewogen wordt.
+    Per gevel is instelbaar of hij op regen reageert: staat dat uit, dan
+    negeert die gevel regen volledig en bedient hij alleen op zonstand en
+    bewolking/straling. Cooldown per gevel voorkomt pendelen. Handmatige
+    bediening blokkeert alleen de betreffende gevel voor de rest van de dag
+    - gedetecteerd via context.user_id + last_updated, dus geen extra
+    input_boolean helpers nodig. Elke gevel heeft een v_facade_x_reason
+    variabele die in de automation-trace zichtbaar is en toont waarom er
+    wel/niet bewogen wordt.
 
   input:
     rain_entity:
@@ -76,9 +79,13 @@ blueprint:
       icon: mdi:home
       collapsed: false
       input:
-        facade_a_open_on_rain:
-          name: "Direct open bij regen - gevel A"
-          description: "Negeer de cooldown en open direct zodra het gaat regenen. Uitzetten laat de normale cooldown ook bij regen gelden."
+        facade_a_react_to_rain:
+          name: "Bedienen bij regen - gevel A"
+          description: >
+            Laat deze gevel reageren op regen: direct open (cooldown
+            genegeerd) zodra het gaat regenen. Uitzetten negeert regen
+            volledig voor deze gevel - hij reageert dan alleen nog op
+            zonstand en bewolking/straling.
           default: true
           selector:
             boolean: {}
@@ -158,9 +165,13 @@ blueprint:
       icon: mdi:home-outline
       collapsed: false
       input:
-        facade_b_open_on_rain:
-          name: "Direct open bij regen - gevel B"
-          description: "Negeer de cooldown en open direct zodra het gaat regenen. Uitzetten laat de normale cooldown ook bij regen gelden."
+        facade_b_react_to_rain:
+          name: "Bedienen bij regen - gevel B"
+          description: >
+            Laat deze gevel reageren op regen: direct open (cooldown
+            genegeerd) zodra het gaat regenen. Uitzetten negeert regen
+            volledig voor deze gevel - hij reageert dan alleen nog op
+            zonstand en bewolking/straling.
           default: true
           selector:
             boolean: {}
@@ -266,7 +277,7 @@ variables:
   azimuth_entity: !input azimuth_entity
   elevation_entity: !input elevation_entity
 
-  facade_a_open_on_rain: !input facade_a_open_on_rain
+  facade_a_react_to_rain: !input facade_a_react_to_rain
   facade_a_covers: !input facade_a_covers
   facade_a_azimuth: !input facade_a_azimuth
   facade_a_min_elevation: !input facade_a_min_elevation
@@ -275,7 +286,7 @@ variables:
   facade_a_closed_position: !input facade_a_closed_position
   facade_a_open_position: !input facade_a_open_position
 
-  facade_b_open_on_rain: !input facade_b_open_on_rain
+  facade_b_react_to_rain: !input facade_b_react_to_rain
   facade_b_covers: !input facade_b_covers
   facade_b_azimuth: !input facade_b_azimuth
   facade_b_min_elevation: !input facade_b_min_elevation
@@ -297,12 +308,13 @@ variables:
     {{ (diff | abs) <= (facade_a_sun_window | float / 2)
        and (states(elevation_entity) | float(-90) >= facade_a_min_elevation | float) }}
 
-  v_facade_a_force_close: "{{ (not v_raining | bool) and v_facade_a_in_window | bool and v_weather_ok | bool }}"
-  v_facade_a_force_open: "{{ v_raining | bool or not (v_facade_a_in_window | bool) }}"
+  v_facade_a_rain_active: "{{ v_raining | bool and facade_a_react_to_rain | bool }}"
+  v_facade_a_force_close: "{{ (not v_facade_a_rain_active | bool) and v_facade_a_in_window | bool and v_weather_ok | bool }}"
+  v_facade_a_force_open: "{{ v_facade_a_rain_active | bool or not (v_facade_a_in_window | bool) }}"
   v_facade_a_target: "{{ facade_a_closed_position | int if v_facade_a_force_close | bool else facade_a_open_position | int }}"
 
   v_facade_a_reason: >
-    {{ 'regen -> open' if v_raining | bool
+    {{ 'regen -> open' if v_facade_a_rain_active | bool
        else 'zon buiten zonvenster -> open' if not (v_facade_a_in_window | bool)
        else 'zon in venster + weer geschikt -> dicht' if v_weather_ok | bool
        else 'zon in venster, te bewolkt/straling onder drempel -> ongewijzigd' }}
@@ -342,12 +354,13 @@ variables:
     {{ (diff | abs) <= (facade_b_sun_window | float / 2)
        and (states(elevation_entity) | float(-90) >= facade_b_min_elevation | float) }}
 
-  v_facade_b_force_close: "{{ (not v_raining | bool) and v_facade_b_in_window | bool and v_weather_ok | bool }}"
-  v_facade_b_force_open: "{{ v_raining | bool or not (v_facade_b_in_window | bool) }}"
+  v_facade_b_rain_active: "{{ v_raining | bool and facade_b_react_to_rain | bool }}"
+  v_facade_b_force_close: "{{ (not v_facade_b_rain_active | bool) and v_facade_b_in_window | bool and v_weather_ok | bool }}"
+  v_facade_b_force_open: "{{ v_facade_b_rain_active | bool or not (v_facade_b_in_window | bool) }}"
   v_facade_b_target: "{{ facade_b_closed_position | int if v_facade_b_force_close | bool else facade_b_open_position | int }}"
 
   v_facade_b_reason: >
-    {{ 'regen -> open' if v_raining | bool
+    {{ 'regen -> open' if v_facade_b_rain_active | bool
        else 'zon buiten zonvenster -> open' if not (v_facade_b_in_window | bool)
        else 'zon in venster + weer geschikt -> dicht' if v_weather_ok | bool
        else 'zon in venster, te bewolkt/straling onder drempel -> ongewijzigd' }}
@@ -384,16 +397,16 @@ variables:
 
 action:
   # Gevel A
-  # Cooldown genegeerd zolang het regent en facade_a_open_on_rain aan staat,
-  # zodat de zonwering direct omhoog gaat i.p.v. nat te worden; bij einde
-  # regen geldt de cooldown weer normaal.
+  # Cooldown genegeerd zolang v_facade_a_rain_active waar is (het regent en
+  # facade_a_react_to_rain staat aan), zodat de zonwering direct omhoog gaat
+  # i.p.v. nat te worden; bij einde regen geldt de cooldown weer normaal.
   - if:
       - condition: template
         value_template: >
           {{ facade_a_covers | length > 0
              and not v_facade_a_override_active | bool
              and (v_facade_a_force_close | bool or v_facade_a_force_open | bool)
-             and (v_facade_a_cooldown_ok | bool or (v_raining | bool and facade_a_open_on_rain | bool))
+             and (v_facade_a_cooldown_ok | bool or v_facade_a_rain_active | bool)
              and v_facade_a_needs_move | bool }}
     then:
       - service: cover.set_cover_position
@@ -403,16 +416,16 @@ action:
           position: "{{ v_facade_a_target }}"
 
   # Gevel B
-  # Cooldown genegeerd zolang het regent en facade_b_open_on_rain aan staat,
-  # zodat de zonwering direct omhoog gaat i.p.v. nat te worden; bij einde
-  # regen geldt de cooldown weer normaal.
+  # Cooldown genegeerd zolang v_facade_b_rain_active waar is (het regent en
+  # facade_b_react_to_rain staat aan), zodat de zonwering direct omhoog gaat
+  # i.p.v. nat te worden; bij einde regen geldt de cooldown weer normaal.
   - if:
       - condition: template
         value_template: >
           {{ facade_b_covers | length > 0
              and not v_facade_b_override_active | bool
              and (v_facade_b_force_close | bool or v_facade_b_force_open | bool)
-             and (v_facade_b_cooldown_ok | bool or (v_raining | bool and facade_b_open_on_rain | bool))
+             and (v_facade_b_cooldown_ok | bool or v_facade_b_rain_active | bool)
              and v_facade_b_needs_move | bool }}
     then:
       - service: cover.set_cover_position
