@@ -223,9 +223,6 @@ mode: single
 max_exceeded: silent
 
 trigger:
-  - platform: time_pattern
-    minutes: "/5"
-    id: periodic
   - platform: state
     entity_id: !input rain_entity
     id: rain
