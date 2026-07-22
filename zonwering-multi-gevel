@@ -98,6 +98,28 @@ blueprint:
               step: 1
               unit_of_measurement: "min"
               mode: slider
+        facade_a_closed_position:
+          name: "Positie 'dicht' gevel A"
+          description: "Cover-positie die wordt gebruikt als de zonwering moet sluiten (0 = volledig dicht)."
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
+        facade_a_open_position:
+          name: "Positie 'open' gevel A"
+          description: "Cover-positie die wordt gebruikt als de zonwering moet openen (100 = volledig open)."
+          default: 100
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
 
     facade_b_settings:
       name: "🏡 Gevel B"
@@ -152,6 +174,28 @@ blueprint:
               step: 1
               unit_of_measurement: "min"
               mode: slider
+        facade_b_closed_position:
+          name: "Positie 'dicht' gevel B"
+          description: "Cover-positie die wordt gebruikt als de zonwering moet sluiten (0 = volledig dicht)."
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
+        facade_b_open_position:
+          name: "Positie 'open' gevel B"
+          description: "Cover-positie die wordt gebruikt als de zonwering moet openen (100 = volledig open)."
+          default: 100
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
 
 mode: single
 max_exceeded: silent
@@ -184,12 +228,16 @@ variables:
   facade_a_min_elevation: !input facade_a_min_elevation
   facade_a_sun_window: !input facade_a_sun_window
   facade_a_cooldown_minutes: !input facade_a_cooldown_minutes
+  facade_a_closed_position: !input facade_a_closed_position
+  facade_a_open_position: !input facade_a_open_position
 
   facade_b_covers: !input facade_b_covers
   facade_b_azimuth: !input facade_b_azimuth
   facade_b_min_elevation: !input facade_b_min_elevation
   facade_b_sun_window: !input facade_b_sun_window
   facade_b_cooldown_minutes: !input facade_b_cooldown_minutes
+  facade_b_closed_position: !input facade_b_closed_position
+  facade_b_open_position: !input facade_b_open_position
 
   v_raining: "{{ is_state(rain_entity, 'on') }}"
 
@@ -205,7 +253,7 @@ variables:
        and (state_attr('sun.sun','elevation') | float(-90) >= facade_a_min_elevation | float) }}
 
   v_facade_a_should_close: "{{ (not v_raining | bool) and v_facade_a_in_window | bool and v_weather_ok | bool }}"
-  v_facade_a_target: "{{ 0 if v_facade_a_should_close | bool else 100 }}"
+  v_facade_a_target: "{{ facade_a_closed_position | int if v_facade_a_should_close | bool else facade_a_open_position | int }}"
 
   v_facade_a_override_active: >
     {% set ns = namespace(active=false) %}
@@ -243,7 +291,7 @@ variables:
        and (state_attr('sun.sun','elevation') | float(-90) >= facade_b_min_elevation | float) }}
 
   v_facade_b_should_close: "{{ (not v_raining | bool) and v_facade_b_in_window | bool and v_weather_ok | bool }}"
-  v_facade_b_target: "{{ 0 if v_facade_b_should_close | bool else 100 }}"
+  v_facade_b_target: "{{ facade_b_closed_position | int if v_facade_b_should_close | bool else facade_b_open_position | int }}"
 
   v_facade_b_override_active: >
     {% set ns = namespace(active=false) %}
