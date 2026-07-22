@@ -407,9 +407,30 @@ action:
       - condition: template
         alias: "Geen handmatige override vandaag - gevel A"
         value_template: "{{ not v_facade_a_override_active | bool }}"
-      - condition: template
+      - condition: or
         alias: "Zonstand/regen/weer vraagt om open of dicht - gevel A"
-        value_template: "{{ v_facade_a_force_close | bool or v_facade_a_force_open | bool }}"
+        conditions:
+          - condition: and
+            alias: "Forceer dicht - gevel A (geen regen, zon in venster, weer geschikt)"
+            conditions:
+              - condition: template
+                alias: "Geen regen (of regen genegeerd) - gevel A"
+                value_template: "{{ not v_facade_a_rain_active | bool }}"
+              - condition: template
+                alias: "Zon in zonvenster - gevel A"
+                value_template: "{{ v_facade_a_in_window | bool }}"
+              - condition: template
+                alias: "Weer geschikt (helder/straling boven drempel) - gevel A"
+                value_template: "{{ v_weather_ok | bool }}"
+          - condition: or
+            alias: "Forceer open - gevel A (regen of buiten zonvenster)"
+            conditions:
+              - condition: template
+                alias: "Regen actief - gevel A"
+                value_template: "{{ v_facade_a_rain_active | bool }}"
+              - condition: template
+                alias: "Zon buiten zonvenster - gevel A"
+                value_template: "{{ not (v_facade_a_in_window | bool) }}"
       - condition: template
         alias: "Cooldown voorbij of regen forceert direct - gevel A"
         value_template: "{{ v_facade_a_cooldown_ok | bool or v_facade_a_rain_active | bool }}"
@@ -417,13 +438,6 @@ action:
         alias: "Cover-positie moet nog wijzigen - gevel A"
         value_template: "{{ v_facade_a_needs_move | bool }}"
     then:
-      - service: logbook.log
-        alias: "Log reden - gevel A"
-        data:
-          name: "Zonwering gevel A"
-          message: >
-            gaat naar {{ 'dicht' if v_facade_a_force_close | bool else 'open' }}
-            (positie {{ v_facade_a_target }}) - reden: {{ v_facade_a_reason }}
       - service: cover.set_cover_position
         target:
           entity_id: !input facade_a_covers
@@ -441,9 +455,30 @@ action:
       - condition: template
         alias: "Geen handmatige override vandaag - gevel B"
         value_template: "{{ not v_facade_b_override_active | bool }}"
-      - condition: template
+      - condition: or
         alias: "Zonstand/regen/weer vraagt om open of dicht - gevel B"
-        value_template: "{{ v_facade_b_force_close | bool or v_facade_b_force_open | bool }}"
+        conditions:
+          - condition: and
+            alias: "Forceer dicht - gevel B (geen regen, zon in venster, weer geschikt)"
+            conditions:
+              - condition: template
+                alias: "Geen regen (of regen genegeerd) - gevel B"
+                value_template: "{{ not v_facade_b_rain_active | bool }}"
+              - condition: template
+                alias: "Zon in zonvenster - gevel B"
+                value_template: "{{ v_facade_b_in_window | bool }}"
+              - condition: template
+                alias: "Weer geschikt (helder/straling boven drempel) - gevel B"
+                value_template: "{{ v_weather_ok | bool }}"
+          - condition: or
+            alias: "Forceer open - gevel B (regen of buiten zonvenster)"
+            conditions:
+              - condition: template
+                alias: "Regen actief - gevel B"
+                value_template: "{{ v_facade_b_rain_active | bool }}"
+              - condition: template
+                alias: "Zon buiten zonvenster - gevel B"
+                value_template: "{{ not (v_facade_b_in_window | bool) }}"
       - condition: template
         alias: "Cooldown voorbij of regen forceert direct - gevel B"
         value_template: "{{ v_facade_b_cooldown_ok | bool or v_facade_b_rain_active | bool }}"
@@ -451,13 +486,6 @@ action:
         alias: "Cover-positie moet nog wijzigen - gevel B"
         value_template: "{{ v_facade_b_needs_move | bool }}"
     then:
-      - service: logbook.log
-        alias: "Log reden - gevel B"
-        data:
-          name: "Zonwering gevel B"
-          message: >
-            gaat naar {{ 'dicht' if v_facade_b_force_close | bool else 'open' }}
-            (positie {{ v_facade_b_target }}) - reden: {{ v_facade_b_reason }}
       - service: cover.set_cover_position
         target:
           entity_id: !input facade_b_covers
