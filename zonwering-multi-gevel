@@ -1,0 +1,307 @@
+# Version: 1.0.0
+blueprint:
+  domain: automation
+  name: "☀️ Zonwering - zonstand, regen & bewolking (multi-gevel)"
+  description: >
+    Bedient zonwering op basis van zonsazimuth/elevatie per gevel, regen
+    (altijd open bij regen, weer dicht zodra het stopt als de conditie nog
+    geldt) en bewolking/straling (dicht bij bewolkt + straling boven
+    drempel, of bij partlycloudy/sunny). Cooldown per gevel voorkomt
+    pendelen. Handmatige bediening blokkeert alleen de betreffende gevel
+    voor de rest van de dag - gedetecteerd via context.user_id + last_updated,
+    dus geen extra input_boolean helpers nodig.
+
+  input:
+    rain_entity:
+      name: "🌧️ Regensensor (binary_sensor)"
+      selector:
+        entity:
+          domain: binary_sensor
+
+    weather_entity:
+      name: "🌤️ Weather entity (bewolking)"
+      selector:
+        entity:
+          domain: weather
+
+    radiation_entity:
+      name: "☀️ Stralingssensor (W/m²)"
+      selector:
+        entity:
+          domain: sensor
+
+    radiation_threshold:
+      name: "☁️ Stralingsdrempel bij bewolkt"
+      description: >
+        Bij weather-status 'cloudy' toch sluiten als de straling boven deze
+        waarde komt. Bij 'partlycloudy' of 'sunny' wordt altijd gesloten
+        (mits zonvenster klopt), ongeacht straling.
+      default: 500
+      selector:
+        number:
+          min: 250
+          max: 1000
+          step: 10
+          unit_of_measurement: "W/m²"
+          mode: slider
+
+    facade_a_settings:
+      name: "🏠 Gevel A"
+      icon: mdi:home
+      collapsed: false
+      input:
+        facade_a_covers:
+          name: "Zonwering gevel A"
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: cover
+        facade_a_azimuth:
+          name: "Azimuth gevel A"
+          default: 160
+          selector:
+            number:
+              min: 0
+              max: 359
+              step: 1
+              unit_of_measurement: "°"
+              mode: slider
+        facade_a_min_elevation:
+          name: "Minimale zonshoogte gevel A"
+          default: 15
+          selector:
+            number:
+              min: 0
+              max: 90
+              step: 1
+              unit_of_measurement: "°"
+              mode: slider
+        facade_a_sun_window:
+          name: "Zonvenster breedte gevel A"
+          default: 80
+          selector:
+            number:
+              min: 10
+              max: 180
+              step: 1
+              unit_of_measurement: "°"
+              mode: slider
+        facade_a_cooldown_minutes:
+          name: "Cooldown gevel A"
+          default: 20
+          selector:
+            number:
+              min: 5
+              max: 60
+              step: 1
+              unit_of_measurement: "min"
+              mode: slider
+
+    facade_b_settings:
+      name: "🏡 Gevel B"
+      icon: mdi:home-outline
+      collapsed: false
+      input:
+        facade_b_covers:
+          name: "Zonwering gevel B"
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: cover
+        facade_b_azimuth:
+          name: "Azimuth gevel B"
+          default: 340
+          selector:
+            number:
+              min: 0
+              max: 359
+              step: 1
+              unit_of_measurement: "°"
+              mode: slider
+        facade_b_min_elevation:
+          name: "Minimale zonshoogte gevel B"
+          default: 15
+          selector:
+            number:
+              min: 0
+              max: 90
+              step: 1
+              unit_of_measurement: "°"
+              mode: slider
+        facade_b_sun_window:
+          name: "Zonvenster breedte gevel B"
+          default: 80
+          selector:
+            number:
+              min: 10
+              max: 180
+              step: 1
+              unit_of_measurement: "°"
+              mode: slider
+        facade_b_cooldown_minutes:
+          name: "Cooldown gevel B"
+          default: 20
+          selector:
+            number:
+              min: 5
+              max: 60
+              step: 1
+              unit_of_measurement: "min"
+              mode: slider
+
+mode: single
+max_exceeded: silent
+
+trigger:
+  - platform: time_pattern
+    minutes: "/5"
+    id: periodic
+  - platform: state
+    entity_id: !input rain_entity
+    id: rain
+  - platform: state
+    entity_id: !input weather_entity
+    id: weather
+  - platform: state
+    entity_id: !input radiation_entity
+    id: radiation
+  - platform: homeassistant
+    event: start
+    id: ha_start
+
+variables:
+  rain_entity: !input rain_entity
+  weather_entity: !input weather_entity
+  radiation_entity: !input radiation_entity
+  radiation_threshold: !input radiation_threshold
+
+  facade_a_covers: !input facade_a_covers
+  facade_a_azimuth: !input facade_a_azimuth
+  facade_a_min_elevation: !input facade_a_min_elevation
+  facade_a_sun_window: !input facade_a_sun_window
+  facade_a_cooldown_minutes: !input facade_a_cooldown_minutes
+
+  facade_b_covers: !input facade_b_covers
+  facade_b_azimuth: !input facade_b_azimuth
+  facade_b_min_elevation: !input facade_b_min_elevation
+  facade_b_sun_window: !input facade_b_sun_window
+  facade_b_cooldown_minutes: !input facade_b_cooldown_minutes
+
+  v_raining: "{{ is_state(rain_entity, 'on') }}"
+
+  v_weather_ok: >
+    {% set w = states(weather_entity) %}
+    {% set rad = states(radiation_entity) | float(0) %}
+    {{ w in ['sunny', 'clear-night', 'partlycloudy']
+       or (w == 'cloudy' and rad >= radiation_threshold | float) }}
+
+  v_facade_a_in_window: >
+    {% set diff = ((state_attr('sun.sun','azimuth') | float(0) - facade_a_azimuth | float + 180) % 360) - 180 %}
+    {{ (diff | abs) <= (facade_a_sun_window | float / 2)
+       and (state_attr('sun.sun','elevation') | float(-90) >= facade_a_min_elevation | float) }}
+
+  v_facade_a_should_close: "{{ (not v_raining | bool) and v_facade_a_in_window | bool and v_weather_ok | bool }}"
+  v_facade_a_target: "{{ 0 if v_facade_a_should_close | bool else 100 }}"
+
+  v_facade_a_override_active: >
+    {% set ns = namespace(active=false) %}
+    {% for c in facade_a_covers %}
+      {% set st = states[c] %}
+      {% if st is not none and st.context.user_id is not none and st.last_updated.date() == now().date() %}
+        {% set ns.active = true %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.active }}
+
+  v_facade_a_cooldown_ok: >
+    {% set secs = facade_a_cooldown_minutes | float(20) * 60 %}
+    {% set ns = namespace(ok=true) %}
+    {% for c in facade_a_covers %}
+      {% if (as_timestamp(now()) - as_timestamp(states[c].last_updated)) < secs %}
+        {% set ns.ok = false %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.ok }}
+
+  v_facade_a_needs_move: >
+    {% set target = v_facade_a_target | int %}
+    {% set ns = namespace(needs=false) %}
+    {% for c in facade_a_covers %}
+      {% if state_attr(c, 'current_position') | int(-1) != target %}
+        {% set ns.needs = true %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.needs }}
+
+  v_facade_b_in_window: >
+    {% set diff = ((state_attr('sun.sun','azimuth') | float(0) - facade_b_azimuth | float + 180) % 360) - 180 %}
+    {{ (diff | abs) <= (facade_b_sun_window | float / 2)
+       and (state_attr('sun.sun','elevation') | float(-90) >= facade_b_min_elevation | float) }}
+
+  v_facade_b_should_close: "{{ (not v_raining | bool) and v_facade_b_in_window | bool and v_weather_ok | bool }}"
+  v_facade_b_target: "{{ 0 if v_facade_b_should_close | bool else 100 }}"
+
+  v_facade_b_override_active: >
+    {% set ns = namespace(active=false) %}
+    {% for c in facade_b_covers %}
+      {% set st = states[c] %}
+      {% if st is not none and st.context.user_id is not none and st.last_updated.date() == now().date() %}
+        {% set ns.active = true %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.active }}
+
+  v_facade_b_cooldown_ok: >
+    {% set secs = facade_b_cooldown_minutes | float(20) * 60 %}
+    {% set ns = namespace(ok=true) %}
+    {% for c in facade_b_covers %}
+      {% if (as_timestamp(now()) - as_timestamp(states[c].last_updated)) < secs %}
+        {% set ns.ok = false %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.ok }}
+
+  v_facade_b_needs_move: >
+    {% set target = v_facade_b_target | int %}
+    {% set ns = namespace(needs=false) %}
+    {% for c in facade_b_covers %}
+      {% if state_attr(c, 'current_position') | int(-1) != target %}
+        {% set ns.needs = true %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.needs }}
+
+action:
+  # Gevel A
+  - if:
+      - condition: template
+        value_template: >
+          {{ facade_a_covers | length > 0
+             and not v_facade_a_override_active | bool
+             and v_facade_a_cooldown_ok | bool
+             and v_facade_a_needs_move | bool }}
+    then:
+      - service: cover.set_cover_position
+        target:
+          entity_id: !input facade_a_covers
+        data:
+          position: "{{ v_facade_a_target }}"
+
+  # Gevel B
+  - if:
+      - condition: template
+        value_template: >
+          {{ facade_b_covers | length > 0
+             and not v_facade_b_override_active | bool
+             and v_facade_b_cooldown_ok | bool
+             and v_facade_b_needs_move | bool }}
+    then:
+      - service: cover.set_cover_position
+        target:
+          entity_id: !input facade_b_covers
+        data:
+          position: "{{ v_facade_b_target }}"
