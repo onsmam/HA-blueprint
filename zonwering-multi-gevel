@@ -402,12 +402,20 @@ action:
   # i.p.v. nat te worden; bij einde regen geldt de cooldown weer normaal.
   - if:
       - condition: template
-        value_template: >
-          {{ facade_a_covers | length > 0
-             and not v_facade_a_override_active | bool
-             and (v_facade_a_force_close | bool or v_facade_a_force_open | bool)
-             and (v_facade_a_cooldown_ok | bool or v_facade_a_rain_active | bool)
-             and v_facade_a_needs_move | bool }}
+        alias: "Covers geconfigureerd voor gevel A"
+        value_template: "{{ facade_a_covers | length > 0 }}"
+      - condition: template
+        alias: "Geen handmatige override vandaag - gevel A"
+        value_template: "{{ not v_facade_a_override_active | bool }}"
+      - condition: template
+        alias: "Zonstand/regen/weer vraagt om open of dicht - gevel A"
+        value_template: "{{ v_facade_a_force_close | bool or v_facade_a_force_open | bool }}"
+      - condition: template
+        alias: "Cooldown voorbij of regen forceert direct - gevel A"
+        value_template: "{{ v_facade_a_cooldown_ok | bool or v_facade_a_rain_active | bool }}"
+      - condition: template
+        alias: "Cover-positie moet nog wijzigen - gevel A"
+        value_template: "{{ v_facade_a_needs_move | bool }}"
     then:
       - service: cover.set_cover_position
         target:
@@ -421,12 +429,20 @@ action:
   # i.p.v. nat te worden; bij einde regen geldt de cooldown weer normaal.
   - if:
       - condition: template
-        value_template: >
-          {{ facade_b_covers | length > 0
-             and not v_facade_b_override_active | bool
-             and (v_facade_b_force_close | bool or v_facade_b_force_open | bool)
-             and (v_facade_b_cooldown_ok | bool or v_facade_b_rain_active | bool)
-             and v_facade_b_needs_move | bool }}
+        alias: "Covers geconfigureerd voor gevel B"
+        value_template: "{{ facade_b_covers | length > 0 }}"
+      - condition: template
+        alias: "Geen handmatige override vandaag - gevel B"
+        value_template: "{{ not v_facade_b_override_active | bool }}"
+      - condition: template
+        alias: "Zonstand/regen/weer vraagt om open of dicht - gevel B"
+        value_template: "{{ v_facade_b_force_close | bool or v_facade_b_force_open | bool }}"
+      - condition: template
+        alias: "Cooldown voorbij of regen forceert direct - gevel B"
+        value_template: "{{ v_facade_b_cooldown_ok | bool or v_facade_b_rain_active | bool }}"
+      - condition: template
+        alias: "Cover-positie moet nog wijzigen - gevel B"
+        value_template: "{{ v_facade_b_needs_move | bool }}"
     then:
       - service: cover.set_cover_position
         target:
