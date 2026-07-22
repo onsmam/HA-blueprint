@@ -352,12 +352,14 @@ variables:
 
 action:
   # Gevel A
+  # Cooldown genegeerd zolang het regent, zodat de zonwering direct omhoog
+  # gaat i.p.v. nat te worden; bij einde regen geldt de cooldown weer normaal.
   - if:
       - condition: template
         value_template: >
           {{ facade_a_covers | length > 0
              and not v_facade_a_override_active | bool
-             and v_facade_a_cooldown_ok | bool
+             and (v_facade_a_cooldown_ok | bool or v_raining | bool)
              and v_facade_a_needs_move | bool }}
     then:
       - service: cover.set_cover_position
@@ -367,12 +369,14 @@ action:
           position: "{{ v_facade_a_target }}"
 
   # Gevel B
+  # Cooldown genegeerd zolang het regent, zodat de zonwering direct omhoog
+  # gaat i.p.v. nat te worden; bij einde regen geldt de cooldown weer normaal.
   - if:
       - condition: template
         value_template: >
           {{ facade_b_covers | length > 0
              and not v_facade_b_override_active | bool
-             and v_facade_b_cooldown_ok | bool
+             and (v_facade_b_cooldown_ok | bool or v_raining | bool)
              and v_facade_b_needs_move | bool }}
     then:
       - service: cover.set_cover_position
