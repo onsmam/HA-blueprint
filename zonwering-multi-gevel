@@ -11,7 +11,10 @@ blueprint:
     niet geforceerd open gegaan - de zonwering blijft dan gewoon staan.
     Per gevel is instelbaar of hij op regen reageert: staat dat uit, dan
     negeert die gevel regen volledig en bedient hij alleen op zonstand en
-    bewolking/straling. Cooldown per gevel voorkomt pendelen. Handmatige
+    bewolking/straling. Ook is per gevel instelbaar of hij mag openen,
+    sluiten, of beide - 'alleen sluiten' laat een gevel bijvoorbeeld nooit
+    automatisch weer opengaan zodra de zon weg is. Cooldown per gevel
+    voorkomt pendelen. Handmatige
     bediening blokkeert alleen de betreffende gevel voor de rest van de dag
     - gedetecteerd via context.user_id + last_updated, dus geen extra
     input_boolean helpers nodig. Elke gevel heeft een v_facade_x_reason
@@ -138,6 +141,24 @@ blueprint:
               step: 1
               unit_of_measurement: "min"
               mode: slider
+        facade_a_direction:
+          name: "Toegestane richting - gevel A"
+          description: >
+            'Alleen sluiten' laat deze gevel nooit automatisch openen (ook
+            niet bij regen of als de zon het zonvenster verlaat) - handig
+            als je 'm liever zelf weer open doet. 'Alleen openen' laat 'm
+            nooit automatisch sluiten.
+          default: both
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - value: both
+                  label: "Beide (open en dicht)"
+                - value: close_only
+                  label: "Alleen sluiten"
+                - value: open_only
+                  label: "Alleen openen"
         facade_a_closed_position:
           name: "Positie 'dicht' gevel A"
           description: "Cover-positie die wordt gebruikt als de zonwering moet sluiten (0 = volledig dicht)."
@@ -225,6 +246,24 @@ blueprint:
               step: 1
               unit_of_measurement: "min"
               mode: slider
+        facade_b_direction:
+          name: "Toegestane richting - gevel B"
+          description: >
+            'Alleen sluiten' laat deze gevel nooit automatisch openen (ook
+            niet bij regen of als de zon het zonvenster verlaat) - handig
+            als je 'm liever zelf weer open doet. 'Alleen openen' laat 'm
+            nooit automatisch sluiten.
+          default: both
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - value: both
+                  label: "Beide (open en dicht)"
+                - value: close_only
+                  label: "Alleen sluiten"
+                - value: open_only
+                  label: "Alleen openen"
         facade_b_closed_position:
           name: "Positie 'dicht' gevel B"
           description: "Cover-positie die wordt gebruikt als de zonwering moet sluiten (0 = volledig dicht)."
@@ -285,6 +324,7 @@ variables:
   facade_a_min_elevation: !input facade_a_min_elevation
   facade_a_sun_window: !input facade_a_sun_window
   facade_a_cooldown_minutes: !input facade_a_cooldown_minutes
+  facade_a_direction: !input facade_a_direction
   facade_a_closed_position: !input facade_a_closed_position
   facade_a_open_position: !input facade_a_open_position
 
@@ -294,6 +334,7 @@ variables:
   facade_b_min_elevation: !input facade_b_min_elevation
   facade_b_sun_window: !input facade_b_sun_window
   facade_b_cooldown_minutes: !input facade_b_cooldown_minutes
+  facade_b_direction: !input facade_b_direction
   facade_b_closed_position: !input facade_b_closed_position
   facade_b_open_position: !input facade_b_open_position
 
@@ -310,15 +351,25 @@ variables:
     {{ (diff | abs) <= (facade_a_sun_window | float)
        and (states(elevation_entity) | float(-90) >= facade_a_min_elevation | float) }}
 
+  v_facade_a_can_open: "{{ facade_a_direction in ['both', 'open_only'] }}"
+  v_facade_a_can_close: "{{ facade_a_direction in ['both', 'close_only'] }}"
+
   v_facade_a_rain_active: "{{ v_raining | bool and facade_a_react_to_rain | bool }}"
   v_facade_a_force_close: "{{ (not v_facade_a_rain_active | bool) and v_facade_a_in_window | bool and v_weather_ok | bool }}"
   v_facade_a_force_open: "{{ v_facade_a_rain_active | bool or not (v_facade_a_in_window | bool) }}"
-  v_facade_a_target: "{{ facade_a_closed_position | int if v_facade_a_force_close | bool else facade_a_open_position | int }}"
+  v_facade_a_action_close: "{{ v_facade_a_force_close | bool and v_facade_a_can_close | bool }}"
+  v_facade_a_action_open: "{{ v_facade_a_force_open | bool and v_facade_a_can_open | bool }}"
+  v_facade_a_target: "{{ facade_a_closed_position | int if v_facade_a_action_close | bool else facade_a_open_position | int }}"
 
   v_facade_a_reason: >
-    {{ 'regen -> open' if v_facade_a_rain_active | bool
-       else 'zon buiten zonvenster -> open' if not (v_facade_a_in_window | bool)
-       else 'zon in venster + weer geschikt -> dicht' if v_weather_ok | bool
+    {{ ('regen' if v_facade_a_rain_active | bool else 'zon buiten zonvenster') ~ ' -> open'
+       if v_facade_a_force_open | bool and v_facade_a_can_open | bool
+       else ('regen' if v_facade_a_rain_active | bool else 'zon buiten zonvenster') ~ ' -> zou open moeten, maar richting staat op alleen sluiten'
+       if v_facade_a_force_open | bool
+       else 'zon in venster + weer geschikt -> dicht'
+       if v_facade_a_force_close | bool and v_facade_a_can_close | bool
+       else 'zon in venster + weer geschikt -> zou dicht moeten, maar richting staat op alleen openen'
+       if v_facade_a_force_close | bool
        else 'zon in venster, te bewolkt/straling onder drempel -> ongewijzigd' }}
 
   v_facade_a_override_active: >
@@ -356,15 +407,25 @@ variables:
     {{ (diff | abs) <= (facade_b_sun_window | float)
        and (states(elevation_entity) | float(-90) >= facade_b_min_elevation | float) }}
 
+  v_facade_b_can_open: "{{ facade_b_direction in ['both', 'open_only'] }}"
+  v_facade_b_can_close: "{{ facade_b_direction in ['both', 'close_only'] }}"
+
   v_facade_b_rain_active: "{{ v_raining | bool and facade_b_react_to_rain | bool }}"
   v_facade_b_force_close: "{{ (not v_facade_b_rain_active | bool) and v_facade_b_in_window | bool and v_weather_ok | bool }}"
   v_facade_b_force_open: "{{ v_facade_b_rain_active | bool or not (v_facade_b_in_window | bool) }}"
-  v_facade_b_target: "{{ facade_b_closed_position | int if v_facade_b_force_close | bool else facade_b_open_position | int }}"
+  v_facade_b_action_close: "{{ v_facade_b_force_close | bool and v_facade_b_can_close | bool }}"
+  v_facade_b_action_open: "{{ v_facade_b_force_open | bool and v_facade_b_can_open | bool }}"
+  v_facade_b_target: "{{ facade_b_closed_position | int if v_facade_b_action_close | bool else facade_b_open_position | int }}"
 
   v_facade_b_reason: >
-    {{ 'regen -> open' if v_facade_b_rain_active | bool
-       else 'zon buiten zonvenster -> open' if not (v_facade_b_in_window | bool)
-       else 'zon in venster + weer geschikt -> dicht' if v_weather_ok | bool
+    {{ ('regen' if v_facade_b_rain_active | bool else 'zon buiten zonvenster') ~ ' -> open'
+       if v_facade_b_force_open | bool and v_facade_b_can_open | bool
+       else ('regen' if v_facade_b_rain_active | bool else 'zon buiten zonvenster') ~ ' -> zou open moeten, maar richting staat op alleen sluiten'
+       if v_facade_b_force_open | bool
+       else 'zon in venster + weer geschikt -> dicht'
+       if v_facade_b_force_close | bool and v_facade_b_can_close | bool
+       else 'zon in venster + weer geschikt -> zou dicht moeten, maar richting staat op alleen openen'
+       if v_facade_b_force_close | bool
        else 'zon in venster, te bewolkt/straling onder drempel -> ongewijzigd' }}
 
   v_facade_b_override_active: >
@@ -413,7 +474,7 @@ action:
         alias: "Zonstand/regen/weer vraagt om open of dicht - gevel A"
         conditions:
           - condition: and
-            alias: "Forceer dicht - gevel A (geen regen, zon in venster, weer geschikt)"
+            alias: "Forceer dicht - gevel A (geen regen, zon in venster, weer geschikt, richting staat sluiten toe)"
             conditions:
               - condition: template
                 alias: "Geen regen (of regen genegeerd) - gevel A"
@@ -424,15 +485,24 @@ action:
               - condition: template
                 alias: "Weer geschikt (helder/straling boven drempel) - gevel A"
                 value_template: "{{ v_weather_ok | bool }}"
-          - condition: or
-            alias: "Forceer open - gevel A (regen of buiten zonvenster)"
+              - condition: template
+                alias: "Richting staat sluiten toe - gevel A"
+                value_template: "{{ v_facade_a_can_close | bool }}"
+          - condition: and
+            alias: "Forceer open - gevel A (regen of buiten zonvenster, richting staat openen toe)"
             conditions:
+              - condition: or
+                alias: "Regen actief of zon buiten zonvenster - gevel A"
+                conditions:
+                  - condition: template
+                    alias: "Regen actief - gevel A"
+                    value_template: "{{ v_facade_a_rain_active | bool }}"
+                  - condition: template
+                    alias: "Zon buiten zonvenster - gevel A"
+                    value_template: "{{ not (v_facade_a_in_window | bool) }}"
               - condition: template
-                alias: "Regen actief - gevel A"
-                value_template: "{{ v_facade_a_rain_active | bool }}"
-              - condition: template
-                alias: "Zon buiten zonvenster - gevel A"
-                value_template: "{{ not (v_facade_a_in_window | bool) }}"
+                alias: "Richting staat openen toe - gevel A"
+                value_template: "{{ v_facade_a_can_open | bool }}"
       - condition: template
         alias: "Cooldown voorbij of regen forceert direct - gevel A"
         value_template: "{{ v_facade_a_cooldown_ok | bool or v_facade_a_rain_active | bool }}"
@@ -461,7 +531,7 @@ action:
         alias: "Zonstand/regen/weer vraagt om open of dicht - gevel B"
         conditions:
           - condition: and
-            alias: "Forceer dicht - gevel B (geen regen, zon in venster, weer geschikt)"
+            alias: "Forceer dicht - gevel B (geen regen, zon in venster, weer geschikt, richting staat sluiten toe)"
             conditions:
               - condition: template
                 alias: "Geen regen (of regen genegeerd) - gevel B"
@@ -472,15 +542,24 @@ action:
               - condition: template
                 alias: "Weer geschikt (helder/straling boven drempel) - gevel B"
                 value_template: "{{ v_weather_ok | bool }}"
-          - condition: or
-            alias: "Forceer open - gevel B (regen of buiten zonvenster)"
+              - condition: template
+                alias: "Richting staat sluiten toe - gevel B"
+                value_template: "{{ v_facade_b_can_close | bool }}"
+          - condition: and
+            alias: "Forceer open - gevel B (regen of buiten zonvenster, richting staat openen toe)"
             conditions:
+              - condition: or
+                alias: "Regen actief of zon buiten zonvenster - gevel B"
+                conditions:
+                  - condition: template
+                    alias: "Regen actief - gevel B"
+                    value_template: "{{ v_facade_b_rain_active | bool }}"
+                  - condition: template
+                    alias: "Zon buiten zonvenster - gevel B"
+                    value_template: "{{ not (v_facade_b_in_window | bool) }}"
               - condition: template
-                alias: "Regen actief - gevel B"
-                value_template: "{{ v_facade_b_rain_active | bool }}"
-              - condition: template
-                alias: "Zon buiten zonvenster - gevel B"
-                value_template: "{{ not (v_facade_b_in_window | bool) }}"
+                alias: "Richting staat openen toe - gevel B"
+                value_template: "{{ v_facade_b_can_open | bool }}"
       - condition: template
         alias: "Cooldown voorbij of regen forceert direct - gevel B"
         value_template: "{{ v_facade_b_cooldown_ok | bool or v_facade_b_rain_active | bool }}"
