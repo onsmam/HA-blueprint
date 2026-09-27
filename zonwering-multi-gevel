@@ -13,7 +13,9 @@ blueprint:
     negeert die gevel regen volledig en bedient hij alleen op zonstand en
     bewolking/straling. Ook is per gevel instelbaar of hij mag openen,
     sluiten, of beide - 'alleen sluiten' laat een gevel bijvoorbeeld nooit
-    automatisch weer opengaan zodra de zon weg is. Cooldown per gevel
+    automatisch weer opengaan zodra de zon weg is. Het zonvenster wordt in
+    de zomer afgesteld; een seizoenscorrectie laat de venstergrens daarna
+    meeschuiven met de kortere zonneboog in voor- en najaar. Cooldown per gevel
     voorkomt pendelen. Handmatige
     bediening blokkeert alleen de betreffende gevel voor de rest van de dag
     - gedetecteerd via context.user_id + last_updated, dus geen extra
@@ -131,6 +133,28 @@ blueprint:
               step: 1
               unit_of_measurement: "°"
               mode: slider
+        facade_a_season_correction:
+          name: "Seizoenscorrectie zonvenster - gevel A"
+          description: >
+            Stem het zonvenster af in de zomer (rond de langste dag). Buiten de
+            zomer is de zonneboog korter; met deze correctie schuift de
+            venstergrens mee, zodat de zonwering op hetzelfde relatieve moment
+            van de dag schakelt als in de zomer. 'Middagkant' corrigeert alleen
+            het moment van openen in de middag, 'Ochtendkant' alleen het
+            sluiten in de ochtend.
+          default: afternoon
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - value: "off"
+                  label: "Uit (vaste azimuth-grenzen)"
+                - value: afternoon
+                  label: "Middagkant"
+                - value: morning
+                  label: "Ochtendkant"
+                - value: both
+                  label: "Beide kanten"
         facade_a_cooldown_minutes:
           name: "Cooldown gevel A"
           default: 20
@@ -236,6 +260,28 @@ blueprint:
               step: 1
               unit_of_measurement: "°"
               mode: slider
+        facade_b_season_correction:
+          name: "Seizoenscorrectie zonvenster - gevel B"
+          description: >
+            Stem het zonvenster af in de zomer (rond de langste dag). Buiten de
+            zomer is de zonneboog korter; met deze correctie schuift de
+            venstergrens mee, zodat de zonwering op hetzelfde relatieve moment
+            van de dag schakelt als in de zomer. 'Middagkant' corrigeert alleen
+            het moment van openen in de middag, 'Ochtendkant' alleen het
+            sluiten in de ochtend.
+          default: afternoon
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - value: "off"
+                  label: "Uit (vaste azimuth-grenzen)"
+                - value: afternoon
+                  label: "Middagkant"
+                - value: morning
+                  label: "Ochtendkant"
+                - value: both
+                  label: "Beide kanten"
         facade_b_cooldown_minutes:
           name: "Cooldown gevel B"
           default: 20
@@ -323,6 +369,7 @@ variables:
   facade_a_azimuth: !input facade_a_azimuth
   facade_a_min_elevation: !input facade_a_min_elevation
   facade_a_sun_window: !input facade_a_sun_window
+  facade_a_season_correction: !input facade_a_season_correction
   facade_a_cooldown_minutes: !input facade_a_cooldown_minutes
   facade_a_direction: !input facade_a_direction
   facade_a_closed_position: !input facade_a_closed_position
@@ -333,6 +380,7 @@ variables:
   facade_b_azimuth: !input facade_b_azimuth
   facade_b_min_elevation: !input facade_b_min_elevation
   facade_b_sun_window: !input facade_b_sun_window
+  facade_b_season_correction: !input facade_b_season_correction
   facade_b_cooldown_minutes: !input facade_b_cooldown_minutes
   facade_b_direction: !input facade_b_direction
   facade_b_closed_position: !input facade_b_closed_position
@@ -346,8 +394,31 @@ variables:
     {{ w in ['sunny', 'clear-night', 'partlycloudy']
        or (w == 'cloudy' and rad >= radiation_threshold | float) }}
 
+  # Verhouding tussen de halve zonneboog (zuid -> zonsondergang) op de langste
+  # dag en vandaag; > 1 buiten de zomer. Declinatie benaderd uit de dag van het jaar.
+  v_sun_arc_ratio: >
+    {% set lat = (state_attr('zone.home', 'latitude') | float(52)) * pi / 180 %}
+    {% set doy = now().strftime('%j') | int %}
+    {% set decl = 23.44 * sin(2 * pi * (doy - 81) / 365) * pi / 180 %}
+    {% set decl_ref = 23.44 * pi / 180 %}
+    {% set x = [[sin(decl) / cos(lat), 0.99] | min, -0.99] | max %}
+    {% set x_ref = [[sin(decl_ref) / cos(lat), 0.99] | min, -0.99] | max %}
+    {% set arc = 180 - acos(x) * 180 / pi %}
+    {% set arc_ref = 180 - acos(x_ref) * 180 / pi %}
+    {{ (arc_ref / arc) | round(3) }}
+
+  v_sun_azimuth: "{{ states(azimuth_entity) | float(0) }}"
+
+  v_facade_a_azimuth_eff: >
+    {% set r = (v_sun_azimuth | float % 360) - 180 %}
+    {% if (r >= 0 and facade_a_season_correction in ['afternoon', 'both'])
+       or (r < 0 and facade_a_season_correction in ['morning', 'both']) %}
+      {% set r = r * v_sun_arc_ratio | float(1) %}
+    {% endif %}
+    {{ (180 + r) | round(1) }}
+
   v_facade_a_in_window: >
-    {% set diff = ((states(azimuth_entity) | float(0) - facade_a_azimuth | float + 180) % 360) - 180 %}
+    {% set diff = ((v_facade_a_azimuth_eff | float - facade_a_azimuth | float + 180) % 360) - 180 %}
     {{ (diff | abs) <= (facade_a_sun_window | float)
        and (states(elevation_entity) | float(-90) >= facade_a_min_elevation | float) }}
 
@@ -402,8 +473,16 @@ variables:
     {% endfor %}
     {{ ns.needs }}
 
+  v_facade_b_azimuth_eff: >
+    {% set r = (v_sun_azimuth | float % 360) - 180 %}
+    {% if (r >= 0 and facade_b_season_correction in ['afternoon', 'both'])
+       or (r < 0 and facade_b_season_correction in ['morning', 'both']) %}
+      {% set r = r * v_sun_arc_ratio | float(1) %}
+    {% endif %}
+    {{ (180 + r) | round(1) }}
+
   v_facade_b_in_window: >
-    {% set diff = ((states(azimuth_entity) | float(0) - facade_b_azimuth | float + 180) % 360) - 180 %}
+    {% set diff = ((v_facade_b_azimuth_eff | float - facade_b_azimuth | float + 180) % 360) - 180 %}
     {{ (diff | abs) <= (facade_b_sun_window | float)
        and (states(elevation_entity) | float(-90) >= facade_b_min_elevation | float) }}
 
