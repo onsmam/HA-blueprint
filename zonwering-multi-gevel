@@ -48,8 +48,8 @@ blueprint:
       name: "🧭 Zon-azimuth sensor"
       description: >
         Sensor met de actuele zonsazimuth in graden. Wordt gebruikt i.p.v.
-        sun.sun en triggert de automation direct bij wijziging, zodat er
-        niet op een tijd-polling gewacht hoeft te worden.
+        sun.sun; de automation triggert zodra de zon een zonvenster in- of
+        uitgaat.
       default: sensor.sun_solar_azimuth
       selector:
         entity:
@@ -59,8 +59,7 @@ blueprint:
       name: "🧭 Zon-elevatie sensor"
       description: >
         Sensor met de actuele zonshoogte (elevatie) in graden. Wordt
-        gebruikt i.p.v. sun.sun en triggert de automation direct bij
-        wijziging.
+        gebruikt i.p.v. sun.sun.
       default: sensor.sun_solar_elevation
       selector:
         entity:
@@ -383,22 +382,155 @@ blueprint:
 mode: single
 max_exceeded: silent
 
+trace:
+  stored_traces: 100
+
+trigger_variables:
+  tv_azimuth_entity: !input azimuth_entity
+  tv_elevation_entity: !input elevation_entity
+  tv_a_azimuth: !input facade_a_azimuth
+  tv_a_sun_window: !input facade_a_sun_window
+  tv_a_min_elevation: !input facade_a_min_elevation
+  tv_a_season_correction: !input facade_a_season_correction
+  tv_a_covers: !input facade_a_covers
+  tv_a_cooldown_minutes: !input facade_a_cooldown_minutes
+  tv_b_azimuth: !input facade_b_azimuth
+  tv_b_sun_window: !input facade_b_sun_window
+  tv_b_min_elevation: !input facade_b_min_elevation
+  tv_b_season_correction: !input facade_b_season_correction
+  tv_b_covers: !input facade_b_covers
+  tv_b_cooldown_minutes: !input facade_b_cooldown_minutes
+
+# Alleen triggeren op momenten waarop er iets kan veranderen; elke run levert
+# een trace op, dus op elke sensorupdate triggeren verdringt de relevante traces.
 trigger:
   - platform: state
     entity_id: !input rain_entity
+    to: ~
     id: rain
   - platform: state
     entity_id: !input weather_entity
+    to: ~
     id: weather
-  - platform: state
+  - platform: numeric_state
     entity_id: !input radiation_entity
+    above: !input radiation_threshold
+    for: "00:05:00"
     id: radiation
-  - platform: state
-    entity_id: !input azimuth_entity
-    id: azimuth
-  - platform: state
-    entity_id: !input elevation_entity
-    id: elevation
+  - platform: numeric_state
+    entity_id: !input radiation_entity
+    below: !input radiation_threshold
+    for: "00:05:00"
+    id: radiation
+  - platform: numeric_state
+    entity_id: !input heat_avg_temp_entity
+    below: !input heat_threshold
+    id: heat
+  - platform: numeric_state
+    entity_id: !input heat_avg_temp_entity
+    above: !input heat_threshold
+    id: heat
+
+  # Zon komt in / gaat uit het zonvenster. Moet exact dezelfde berekening zijn
+  # als v_sun_arc_ratio, v_facade_x_azimuth_eff en v_facade_x_in_window.
+  - platform: template
+    id: sun_a
+    value_template: >
+      {% set lat = (state_attr('zone.home', 'latitude') | float(52)) * pi / 180 %}
+      {% set doy = now().strftime('%j') | int %}
+      {% set decl = 23.44 * sin(2 * pi * (doy - 81) / 365) * pi / 180 %}
+      {% set decl_ref = 23.44 * pi / 180 %}
+      {% set x = [[sin(decl) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set x_ref = [[sin(decl_ref) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set ratio = (180 - acos(x_ref) * 180 / pi) / (180 - acos(x) * 180 / pi) %}
+      {% set r = (states(tv_azimuth_entity) | float(0) % 360) - 180 %}
+      {% if (r >= 0 and tv_a_season_correction in ['afternoon', 'both'])
+         or (r < 0 and tv_a_season_correction in ['morning', 'both']) %}
+        {% set r = r * ratio %}
+      {% endif %}
+      {% set diff = ((180 + r - tv_a_azimuth | float + 180) % 360) - 180 %}
+      {{ (diff | abs) <= (tv_a_sun_window | float)
+         and (states(tv_elevation_entity) | float(-90) >= tv_a_min_elevation | float) }}
+  - platform: template
+    id: sun_a
+    value_template: >
+      {% set lat = (state_attr('zone.home', 'latitude') | float(52)) * pi / 180 %}
+      {% set doy = now().strftime('%j') | int %}
+      {% set decl = 23.44 * sin(2 * pi * (doy - 81) / 365) * pi / 180 %}
+      {% set decl_ref = 23.44 * pi / 180 %}
+      {% set x = [[sin(decl) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set x_ref = [[sin(decl_ref) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set ratio = (180 - acos(x_ref) * 180 / pi) / (180 - acos(x) * 180 / pi) %}
+      {% set r = (states(tv_azimuth_entity) | float(0) % 360) - 180 %}
+      {% if (r >= 0 and tv_a_season_correction in ['afternoon', 'both'])
+         or (r < 0 and tv_a_season_correction in ['morning', 'both']) %}
+        {% set r = r * ratio %}
+      {% endif %}
+      {% set diff = ((180 + r - tv_a_azimuth | float + 180) % 360) - 180 %}
+      {{ not ((diff | abs) <= (tv_a_sun_window | float)
+         and (states(tv_elevation_entity) | float(-90) >= tv_a_min_elevation | float)) }}
+  - platform: template
+    id: sun_b
+    value_template: >
+      {% set lat = (state_attr('zone.home', 'latitude') | float(52)) * pi / 180 %}
+      {% set doy = now().strftime('%j') | int %}
+      {% set decl = 23.44 * sin(2 * pi * (doy - 81) / 365) * pi / 180 %}
+      {% set decl_ref = 23.44 * pi / 180 %}
+      {% set x = [[sin(decl) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set x_ref = [[sin(decl_ref) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set ratio = (180 - acos(x_ref) * 180 / pi) / (180 - acos(x) * 180 / pi) %}
+      {% set r = (states(tv_azimuth_entity) | float(0) % 360) - 180 %}
+      {% if (r >= 0 and tv_b_season_correction in ['afternoon', 'both'])
+         or (r < 0 and tv_b_season_correction in ['morning', 'both']) %}
+        {% set r = r * ratio %}
+      {% endif %}
+      {% set diff = ((180 + r - tv_b_azimuth | float + 180) % 360) - 180 %}
+      {{ (diff | abs) <= (tv_b_sun_window | float)
+         and (states(tv_elevation_entity) | float(-90) >= tv_b_min_elevation | float) }}
+  - platform: template
+    id: sun_b
+    value_template: >
+      {% set lat = (state_attr('zone.home', 'latitude') | float(52)) * pi / 180 %}
+      {% set doy = now().strftime('%j') | int %}
+      {% set decl = 23.44 * sin(2 * pi * (doy - 81) / 365) * pi / 180 %}
+      {% set decl_ref = 23.44 * pi / 180 %}
+      {% set x = [[sin(decl) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set x_ref = [[sin(decl_ref) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set ratio = (180 - acos(x_ref) * 180 / pi) / (180 - acos(x) * 180 / pi) %}
+      {% set r = (states(tv_azimuth_entity) | float(0) % 360) - 180 %}
+      {% if (r >= 0 and tv_b_season_correction in ['afternoon', 'both'])
+         or (r < 0 and tv_b_season_correction in ['morning', 'both']) %}
+        {% set r = r * ratio %}
+      {% endif %}
+      {% set diff = ((180 + r - tv_b_azimuth | float + 180) % 360) - 180 %}
+      {{ not ((diff | abs) <= (tv_b_sun_window | float)
+         and (states(tv_elevation_entity) | float(-90) >= tv_b_min_elevation | float)) }}
+
+  # Cooldown verlopen: een beweging die door de cooldown werd tegengehouden
+  # alsnog uitvoeren.
+  - platform: template
+    id: cooldown_a
+    value_template: >
+      {% set ns = namespace(ok=true) %}
+      {% for c in tv_a_covers %}
+        {% if states[c] is not none
+           and now() - states[c].last_updated < timedelta(minutes=tv_a_cooldown_minutes | float) %}
+          {% set ns.ok = false %}
+        {% endif %}
+      {% endfor %}
+      {{ ns.ok and tv_a_covers | length > 0 }}
+  - platform: template
+    id: cooldown_b
+    value_template: >
+      {% set ns = namespace(ok=true) %}
+      {% for c in tv_b_covers %}
+        {% if states[c] is not none
+           and now() - states[c].last_updated < timedelta(minutes=tv_b_cooldown_minutes | float) %}
+          {% set ns.ok = false %}
+        {% endif %}
+      {% endfor %}
+      {{ ns.ok and tv_b_covers | length > 0 }}
+
   - platform: homeassistant
     event: start
     id: ha_start
@@ -459,7 +591,7 @@ variables:
     {% set x_ref = [[sin(decl_ref) / cos(lat), 0.99] | min, -0.99] | max %}
     {% set arc = 180 - acos(x) * 180 / pi %}
     {% set arc_ref = 180 - acos(x_ref) * 180 / pi %}
-    {{ (arc_ref / arc) | round(3) }}
+    {{ arc_ref / arc }}
 
   v_sun_azimuth: "{{ states(azimuth_entity) | float(0) }}"
 
@@ -469,7 +601,7 @@ variables:
        or (r < 0 and facade_a_season_correction in ['morning', 'both']) %}
       {% set r = r * v_sun_arc_ratio | float(1) %}
     {% endif %}
-    {{ (180 + r) | round(1) }}
+    {{ 180 + r }}
 
   v_facade_a_in_window: >
     {% set diff = ((v_facade_a_azimuth_eff | float - facade_a_azimuth | float + 180) % 360) - 180 %}
@@ -541,7 +673,7 @@ variables:
        or (r < 0 and facade_b_season_correction in ['morning', 'both']) %}
       {% set r = r * v_sun_arc_ratio | float(1) %}
     {% endif %}
-    {{ (180 + r) | round(1) }}
+    {{ 180 + r }}
 
   v_facade_b_in_window: >
     {% set diff = ((v_facade_b_azimuth_eff | float - facade_b_azimuth | float + 180) % 360) - 180 %}
