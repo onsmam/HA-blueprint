@@ -15,7 +15,9 @@ blueprint:
     sluiten, of beide - 'alleen sluiten' laat een gevel bijvoorbeeld nooit
     automatisch weer opengaan zodra de zon weg is. Het zonvenster wordt in
     de zomer afgesteld; een seizoenscorrectie laat de venstergrens daarna
-    meeschuiven met de kortere zonneboog in voor- en najaar. Cooldown per gevel
+    meeschuiven met de kortere zonneboog in voor- en najaar. In de warmtemodus
+    (24-uursgemiddelde buitentemperatuur onder de stookgrens) sluit een gevel
+    niet voor de zon, zodat de zonnewarmte de warmtepomp ontlast. Cooldown per gevel
     voorkomt pendelen. Handmatige
     bediening blokkeert alleen de betreffende gevel voor de rest van de dag
     - gedetecteerd via context.user_id + last_updated, dus geen extra
@@ -79,11 +81,47 @@ blueprint:
           unit_of_measurement: "W/m²"
           mode: slider
 
+    heat_avg_temp_entity:
+      name: "🔥 Gemiddelde buitentemperatuur (24 uur)"
+      description: >
+        Voortschrijdend 24-uursgemiddelde van de buitentemperatuur, bijvoorbeeld
+        de gemiddelde buitentemperatuur van de warmtepomp. Ligt dit onder de
+        stookgrens, dan heeft het huis warmte nodig en schakelen gevels met
+        warmtemodus over op zon binnenhalen.
+      default: sensor.luxtronik_281211_0164_outdoor_temperature_average
+      selector:
+        entity:
+          domain: sensor
+
+    heat_threshold:
+      name: "🔥 Stookgrens warmtemodus"
+      description: >
+        Onder dit 24-uursgemiddelde van de buitentemperatuur heeft het huis
+        (zonder zon) warmte nodig. Gaan de screens dan dicht, dan moet de
+        warmtepomp die warmte leveren; daarom blijven ze in de warmtemodus open.
+      default: 15
+      selector:
+        number:
+          min: 5
+          max: 20
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: slider
+
     facade_a_settings:
       name: "🏠 Gevel A"
       icon: mdi:home
       collapsed: false
       input:
+        facade_a_heat_mode:
+          name: "Warmtemodus - gevel A"
+          description: >
+            Als de gemiddelde buitentemperatuur onder de stookgrens ligt, sluit
+            deze gevel niet voor de zon en gaat hij open om zonnewarmte binnen
+            te laten (de toegestane richting blijft gelden).
+          default: true
+          selector:
+            boolean: {}
         facade_a_react_to_rain:
           name: "Bedienen bij regen - gevel A"
           description: >
@@ -211,6 +249,15 @@ blueprint:
       icon: mdi:home-outline
       collapsed: false
       input:
+        facade_b_heat_mode:
+          name: "Warmtemodus - gevel B"
+          description: >
+            Als de gemiddelde buitentemperatuur onder de stookgrens ligt, sluit
+            deze gevel niet voor de zon en gaat hij open om zonnewarmte binnen
+            te laten (de toegestane richting blijft gelden).
+          default: true
+          selector:
+            boolean: {}
         facade_b_react_to_rain:
           name: "Bedienen bij regen - gevel B"
           description: >
@@ -363,7 +410,10 @@ variables:
   radiation_threshold: !input radiation_threshold
   azimuth_entity: !input azimuth_entity
   elevation_entity: !input elevation_entity
+  heat_avg_temp_entity: !input heat_avg_temp_entity
+  heat_threshold: !input heat_threshold
 
+  facade_a_heat_mode: !input facade_a_heat_mode
   facade_a_react_to_rain: !input facade_a_react_to_rain
   facade_a_covers: !input facade_a_covers
   facade_a_azimuth: !input facade_a_azimuth
@@ -375,6 +425,7 @@ variables:
   facade_a_closed_position: !input facade_a_closed_position
   facade_a_open_position: !input facade_a_open_position
 
+  facade_b_heat_mode: !input facade_b_heat_mode
   facade_b_react_to_rain: !input facade_b_react_to_rain
   facade_b_covers: !input facade_b_covers
   facade_b_azimuth: !input facade_b_azimuth
@@ -387,6 +438,9 @@ variables:
   facade_b_open_position: !input facade_b_open_position
 
   v_raining: "{{ is_state(rain_entity, 'on') }}"
+
+  v_outdoor_avg: "{{ states(heat_avg_temp_entity) | float(99) }}"
+  v_heat_needed: "{{ v_outdoor_avg | float(99) < heat_threshold | float }}"
 
   v_weather_ok: >
     {% set w = states(weather_entity) %}
@@ -426,16 +480,24 @@ variables:
   v_facade_a_can_close: "{{ facade_a_direction in ['both', 'close_only'] }}"
 
   v_facade_a_rain_active: "{{ v_raining | bool and facade_a_react_to_rain | bool }}"
-  v_facade_a_force_close: "{{ (not v_facade_a_rain_active | bool) and v_facade_a_in_window | bool and v_weather_ok | bool }}"
-  v_facade_a_force_open: "{{ v_facade_a_rain_active | bool or not (v_facade_a_in_window | bool) }}"
+  v_facade_a_heat_active: "{{ v_heat_needed | bool and facade_a_heat_mode | bool }}"
+  v_facade_a_force_close: >
+    {{ (not v_facade_a_rain_active | bool) and (not v_facade_a_heat_active | bool)
+       and v_facade_a_in_window | bool and v_weather_ok | bool }}
+  v_facade_a_force_open: >
+    {{ v_facade_a_rain_active | bool or v_facade_a_heat_active | bool
+       or not (v_facade_a_in_window | bool) }}
   v_facade_a_action_close: "{{ v_facade_a_force_close | bool and v_facade_a_can_close | bool }}"
   v_facade_a_action_open: "{{ v_facade_a_force_open | bool and v_facade_a_can_open | bool }}"
   v_facade_a_target: "{{ facade_a_closed_position | int if v_facade_a_action_close | bool else facade_a_open_position | int }}"
 
   v_facade_a_reason: >
-    {{ ('regen' if v_facade_a_rain_active | bool else 'zon buiten zonvenster') ~ ' -> open'
+    {% set why = 'regen' if v_facade_a_rain_active | bool
+       else ('warmtemodus (buiten gem. ' ~ v_outdoor_avg ~ '°C < ' ~ heat_threshold ~ '°C)') if v_facade_a_heat_active | bool
+       else 'zon buiten zonvenster' %}
+    {{ why ~ ' -> open'
        if v_facade_a_force_open | bool and v_facade_a_can_open | bool
-       else ('regen' if v_facade_a_rain_active | bool else 'zon buiten zonvenster') ~ ' -> zou open moeten, maar richting staat op alleen sluiten'
+       else why ~ ' -> zou open moeten, maar richting staat op alleen sluiten'
        if v_facade_a_force_open | bool
        else 'zon in venster + weer geschikt -> dicht'
        if v_facade_a_force_close | bool and v_facade_a_can_close | bool
@@ -490,16 +552,24 @@ variables:
   v_facade_b_can_close: "{{ facade_b_direction in ['both', 'close_only'] }}"
 
   v_facade_b_rain_active: "{{ v_raining | bool and facade_b_react_to_rain | bool }}"
-  v_facade_b_force_close: "{{ (not v_facade_b_rain_active | bool) and v_facade_b_in_window | bool and v_weather_ok | bool }}"
-  v_facade_b_force_open: "{{ v_facade_b_rain_active | bool or not (v_facade_b_in_window | bool) }}"
+  v_facade_b_heat_active: "{{ v_heat_needed | bool and facade_b_heat_mode | bool }}"
+  v_facade_b_force_close: >
+    {{ (not v_facade_b_rain_active | bool) and (not v_facade_b_heat_active | bool)
+       and v_facade_b_in_window | bool and v_weather_ok | bool }}
+  v_facade_b_force_open: >
+    {{ v_facade_b_rain_active | bool or v_facade_b_heat_active | bool
+       or not (v_facade_b_in_window | bool) }}
   v_facade_b_action_close: "{{ v_facade_b_force_close | bool and v_facade_b_can_close | bool }}"
   v_facade_b_action_open: "{{ v_facade_b_force_open | bool and v_facade_b_can_open | bool }}"
   v_facade_b_target: "{{ facade_b_closed_position | int if v_facade_b_action_close | bool else facade_b_open_position | int }}"
 
   v_facade_b_reason: >
-    {{ ('regen' if v_facade_b_rain_active | bool else 'zon buiten zonvenster') ~ ' -> open'
+    {% set why = 'regen' if v_facade_b_rain_active | bool
+       else ('warmtemodus (buiten gem. ' ~ v_outdoor_avg ~ '°C < ' ~ heat_threshold ~ '°C)') if v_facade_b_heat_active | bool
+       else 'zon buiten zonvenster' %}
+    {{ why ~ ' -> open'
        if v_facade_b_force_open | bool and v_facade_b_can_open | bool
-       else ('regen' if v_facade_b_rain_active | bool else 'zon buiten zonvenster') ~ ' -> zou open moeten, maar richting staat op alleen sluiten'
+       else why ~ ' -> zou open moeten, maar richting staat op alleen sluiten'
        if v_facade_b_force_open | bool
        else 'zon in venster + weer geschikt -> dicht'
        if v_facade_b_force_close | bool and v_facade_b_can_close | bool
@@ -553,11 +623,14 @@ action:
         alias: "Zonstand/regen/weer vraagt om open of dicht - gevel A"
         conditions:
           - condition: and
-            alias: "Forceer dicht - gevel A (geen regen, zon in venster, weer geschikt, richting staat sluiten toe)"
+            alias: "Forceer dicht - gevel A (geen regen, geen warmtemodus, zon in venster, weer geschikt, richting staat sluiten toe)"
             conditions:
               - condition: template
                 alias: "Geen regen (of regen genegeerd) - gevel A"
                 value_template: "{{ not v_facade_a_rain_active | bool }}"
+              - condition: template
+                alias: "Geen warmtemodus (geen warmte nodig of uitgeschakeld) - gevel A"
+                value_template: "{{ not v_facade_a_heat_active | bool }}"
               - condition: template
                 alias: "Zon in zonvenster - gevel A"
                 value_template: "{{ v_facade_a_in_window | bool }}"
@@ -568,14 +641,17 @@ action:
                 alias: "Richting staat sluiten toe - gevel A"
                 value_template: "{{ v_facade_a_can_close | bool }}"
           - condition: and
-            alias: "Forceer open - gevel A (regen of buiten zonvenster, richting staat openen toe)"
+            alias: "Forceer open - gevel A (regen, warmtemodus of buiten zonvenster, richting staat openen toe)"
             conditions:
               - condition: or
-                alias: "Regen actief of zon buiten zonvenster - gevel A"
+                alias: "Regen actief, warmtemodus of zon buiten zonvenster - gevel A"
                 conditions:
                   - condition: template
                     alias: "Regen actief - gevel A"
                     value_template: "{{ v_facade_a_rain_active | bool }}"
+                  - condition: template
+                    alias: "Warmtemodus: warmte nodig, zon binnenhalen - gevel A"
+                    value_template: "{{ v_facade_a_heat_active | bool }}"
                   - condition: template
                     alias: "Zon buiten zonvenster - gevel A"
                     value_template: "{{ not (v_facade_a_in_window | bool) }}"
@@ -610,11 +686,14 @@ action:
         alias: "Zonstand/regen/weer vraagt om open of dicht - gevel B"
         conditions:
           - condition: and
-            alias: "Forceer dicht - gevel B (geen regen, zon in venster, weer geschikt, richting staat sluiten toe)"
+            alias: "Forceer dicht - gevel B (geen regen, geen warmtemodus, zon in venster, weer geschikt, richting staat sluiten toe)"
             conditions:
               - condition: template
                 alias: "Geen regen (of regen genegeerd) - gevel B"
                 value_template: "{{ not v_facade_b_rain_active | bool }}"
+              - condition: template
+                alias: "Geen warmtemodus (geen warmte nodig of uitgeschakeld) - gevel B"
+                value_template: "{{ not v_facade_b_heat_active | bool }}"
               - condition: template
                 alias: "Zon in zonvenster - gevel B"
                 value_template: "{{ v_facade_b_in_window | bool }}"
@@ -625,14 +704,17 @@ action:
                 alias: "Richting staat sluiten toe - gevel B"
                 value_template: "{{ v_facade_b_can_close | bool }}"
           - condition: and
-            alias: "Forceer open - gevel B (regen of buiten zonvenster, richting staat openen toe)"
+            alias: "Forceer open - gevel B (regen, warmtemodus of buiten zonvenster, richting staat openen toe)"
             conditions:
               - condition: or
-                alias: "Regen actief of zon buiten zonvenster - gevel B"
+                alias: "Regen actief, warmtemodus of zon buiten zonvenster - gevel B"
                 conditions:
                   - condition: template
                     alias: "Regen actief - gevel B"
                     value_template: "{{ v_facade_b_rain_active | bool }}"
+                  - condition: template
+                    alias: "Warmtemodus: warmte nodig, zon binnenhalen - gevel B"
+                    value_template: "{{ v_facade_b_heat_active | bool }}"
                   - condition: template
                     alias: "Zon buiten zonvenster - gevel B"
                     value_template: "{{ not (v_facade_b_in_window | bool) }}"
