@@ -382,9 +382,6 @@ blueprint:
 mode: single
 max_exceeded: silent
 
-trace:
-  stored_traces: 100
-
 trigger_variables:
   tv_azimuth_entity: !input azimuth_entity
   tv_elevation_entity: !input elevation_entity
