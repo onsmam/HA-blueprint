@@ -192,6 +192,21 @@ blueprint:
                   label: "Ochtendkant"
                 - value: both
                   label: "Beide kanten"
+        facade_a_season_strength:
+          name: "Sterkte seizoenscorrectie - gevel A"
+          description: >
+            100% schuift de venstergrens volledig mee met de kortere zonneboog,
+            0% houdt de zomergrens aan. Lage zon schijnt dieper naar binnen, dus
+            volledige correctie opent buiten de zomer vaak te vroeg. In de zomer
+            maakt deze instelling geen verschil.
+          default: 50
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 5
+              unit_of_measurement: "%"
+              mode: slider
         facade_a_cooldown_minutes:
           name: "Cooldown gevel A"
           default: 20
@@ -328,6 +343,21 @@ blueprint:
                   label: "Ochtendkant"
                 - value: both
                   label: "Beide kanten"
+        facade_b_season_strength:
+          name: "Sterkte seizoenscorrectie - gevel B"
+          description: >
+            100% schuift de venstergrens volledig mee met de kortere zonneboog,
+            0% houdt de zomergrens aan. Lage zon schijnt dieper naar binnen, dus
+            volledige correctie opent buiten de zomer vaak te vroeg. In de zomer
+            maakt deze instelling geen verschil.
+          default: 50
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 5
+              unit_of_measurement: "%"
+              mode: slider
         facade_b_cooldown_minutes:
           name: "Cooldown gevel B"
           default: 20
@@ -389,12 +419,14 @@ trigger_variables:
   tv_a_sun_window: !input facade_a_sun_window
   tv_a_min_elevation: !input facade_a_min_elevation
   tv_a_season_correction: !input facade_a_season_correction
+  tv_a_season_strength: !input facade_a_season_strength
   tv_a_covers: !input facade_a_covers
   tv_a_cooldown_minutes: !input facade_a_cooldown_minutes
   tv_b_azimuth: !input facade_b_azimuth
   tv_b_sun_window: !input facade_b_sun_window
   tv_b_min_elevation: !input facade_b_min_elevation
   tv_b_season_correction: !input facade_b_season_correction
+  tv_b_season_strength: !input facade_b_season_strength
   tv_b_covers: !input facade_b_covers
   tv_b_cooldown_minutes: !input facade_b_cooldown_minutes
 
@@ -443,7 +475,7 @@ trigger:
       {% set r = (states(tv_azimuth_entity) | float(0) % 360) - 180 %}
       {% if (r >= 0 and tv_a_season_correction in ['afternoon', 'both'])
          or (r < 0 and tv_a_season_correction in ['morning', 'both']) %}
-        {% set r = r * ratio %}
+        {% set r = r * (1 + (tv_a_season_strength | float(100)) / 100 * (ratio - 1)) %}
       {% endif %}
       {% set diff = ((180 + r - tv_a_azimuth | float + 180) % 360) - 180 %}
       {{ (diff | abs) <= (tv_a_sun_window | float)
@@ -461,7 +493,7 @@ trigger:
       {% set r = (states(tv_azimuth_entity) | float(0) % 360) - 180 %}
       {% if (r >= 0 and tv_a_season_correction in ['afternoon', 'both'])
          or (r < 0 and tv_a_season_correction in ['morning', 'both']) %}
-        {% set r = r * ratio %}
+        {% set r = r * (1 + (tv_a_season_strength | float(100)) / 100 * (ratio - 1)) %}
       {% endif %}
       {% set diff = ((180 + r - tv_a_azimuth | float + 180) % 360) - 180 %}
       {{ not ((diff | abs) <= (tv_a_sun_window | float)
@@ -479,7 +511,7 @@ trigger:
       {% set r = (states(tv_azimuth_entity) | float(0) % 360) - 180 %}
       {% if (r >= 0 and tv_b_season_correction in ['afternoon', 'both'])
          or (r < 0 and tv_b_season_correction in ['morning', 'both']) %}
-        {% set r = r * ratio %}
+        {% set r = r * (1 + (tv_b_season_strength | float(100)) / 100 * (ratio - 1)) %}
       {% endif %}
       {% set diff = ((180 + r - tv_b_azimuth | float + 180) % 360) - 180 %}
       {{ (diff | abs) <= (tv_b_sun_window | float)
@@ -497,7 +529,7 @@ trigger:
       {% set r = (states(tv_azimuth_entity) | float(0) % 360) - 180 %}
       {% if (r >= 0 and tv_b_season_correction in ['afternoon', 'both'])
          or (r < 0 and tv_b_season_correction in ['morning', 'both']) %}
-        {% set r = r * ratio %}
+        {% set r = r * (1 + (tv_b_season_strength | float(100)) / 100 * (ratio - 1)) %}
       {% endif %}
       {% set diff = ((180 + r - tv_b_azimuth | float + 180) % 360) - 180 %}
       {{ not ((diff | abs) <= (tv_b_sun_window | float)
@@ -549,6 +581,7 @@ variables:
   facade_a_min_elevation: !input facade_a_min_elevation
   facade_a_sun_window: !input facade_a_sun_window
   facade_a_season_correction: !input facade_a_season_correction
+  facade_a_season_strength: !input facade_a_season_strength
   facade_a_cooldown_minutes: !input facade_a_cooldown_minutes
   facade_a_direction: !input facade_a_direction
   facade_a_closed_position: !input facade_a_closed_position
@@ -561,6 +594,7 @@ variables:
   facade_b_min_elevation: !input facade_b_min_elevation
   facade_b_sun_window: !input facade_b_sun_window
   facade_b_season_correction: !input facade_b_season_correction
+  facade_b_season_strength: !input facade_b_season_strength
   facade_b_cooldown_minutes: !input facade_b_cooldown_minutes
   facade_b_direction: !input facade_b_direction
   facade_b_closed_position: !input facade_b_closed_position
@@ -596,7 +630,7 @@ variables:
     {% set r = (v_sun_azimuth | float % 360) - 180 %}
     {% if (r >= 0 and facade_a_season_correction in ['afternoon', 'both'])
        or (r < 0 and facade_a_season_correction in ['morning', 'both']) %}
-      {% set r = r * v_sun_arc_ratio | float(1) %}
+      {% set r = r * (1 + (facade_a_season_strength | float(100)) / 100 * (v_sun_arc_ratio | float(1) - 1)) %}
     {% endif %}
     {{ 180 + r }}
 
@@ -668,7 +702,7 @@ variables:
     {% set r = (v_sun_azimuth | float % 360) - 180 %}
     {% if (r >= 0 and facade_b_season_correction in ['afternoon', 'both'])
        or (r < 0 and facade_b_season_correction in ['morning', 'both']) %}
-      {% set r = r * v_sun_arc_ratio | float(1) %}
+      {% set r = r * (1 + (facade_b_season_strength | float(100)) / 100 * (v_sun_arc_ratio | float(1) - 1)) %}
     {% endif %}
     {{ 180 + r }}
 
