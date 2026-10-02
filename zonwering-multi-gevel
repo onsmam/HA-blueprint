@@ -1,0 +1,919 @@
+# Version: 1.0.0
+blueprint:
+  domain: automation
+  name: "☀️ Zonwering - zonstand, regen & straling (multi-gevel)"
+  description: >
+    Bedient zonwering op basis van zonsazimuth/elevatie per gevel, regen
+    (altijd open bij regen, weer dicht zodra het stopt als de conditie nog
+    geldt) en de gemeten zonkracht (dicht als de straling boven de drempel
+    ligt). De drempel is relatief: straling als percentage van heldere hemel
+    bij de huidige zonshoogte. Zakt de zonkracht weer onder de drempel terwijl
+    de zon nog in het venster staat, dan wordt er niet geforceerd open gegaan -
+    de zonwering blijft dan gewoon staan.
+    Per gevel is instelbaar of hij op regen reageert: staat dat uit, dan
+    negeert die gevel regen volledig en bedient hij alleen op zonstand en
+    straling. Ook is per gevel instelbaar of hij mag openen,
+    sluiten, of beide - 'alleen sluiten' laat een gevel bijvoorbeeld nooit
+    automatisch weer opengaan zodra de zon weg is. Het zonvenster wordt in
+    de zomer afgesteld; een seizoenscorrectie laat de venstergrens daarna
+    meeschuiven met de kortere zonneboog in voor- en najaar. In de warmtemodus
+    (24-uursgemiddelde buitentemperatuur onder de stookgrens) sluit een gevel
+    niet voor de zon, zodat de zonnewarmte de warmtepomp ontlast. Cooldown per gevel
+    voorkomt pendelen. Handmatige
+    bediening blokkeert alleen de betreffende gevel voor de rest van de dag
+    - gedetecteerd via context.user_id + last_updated, dus geen extra
+    input_boolean helpers nodig. Elke gevel heeft een v_facade_x_reason
+    variabele die in de automation-trace zichtbaar is en toont waarom er
+    wel/niet bewogen wordt.
+
+  input:
+    rain_entity:
+      name: "🌧️ Regensensor (binary_sensor)"
+      selector:
+        entity:
+          domain: binary_sensor
+
+    radiation_entity:
+      name: "☀️ Stralingssensor (W/m²)"
+      description: >
+        Sensor die de zoninstraling buiten meet in W/m², zoals de 'straling' of
+        'solar radiation' van een weerstation (bijvoorbeeld een Tempest). Dit is
+        de hoeveelheid zonne-energie die op een horizontaal vlak valt: bij volle
+        zon in de zomer rond 800-900 W/m², bij zware bewolking enkele tientallen.
+        Geen lux-sensor en geen zonnepaneel-opbrengst gebruiken. De automation
+        vergelijkt deze waarde met de heldere-hemelstraling op de huidige
+        zonshoogte (zie Zonkracht-drempel).
+      selector:
+        entity:
+          domain: sensor
+
+    azimuth_entity:
+      name: "🧭 Zon-azimuth sensor"
+      description: >
+        Sensor met de actuele zonsazimuth in graden. Wordt gebruikt i.p.v.
+        sun.sun; de automation triggert zodra de zon een zonvenster in- of
+        uitgaat.
+      default: sensor.sun_solar_azimuth
+      selector:
+        entity:
+          domain: sensor
+
+    elevation_entity:
+      name: "🧭 Zon-elevatie sensor"
+      description: >
+        Sensor met de actuele zonshoogte (elevatie) in graden. Wordt
+        gebruikt i.p.v. sun.sun.
+      default: sensor.sun_solar_elevation
+      selector:
+        entity:
+          domain: sensor
+
+    sun_strength_threshold:
+      name: "☀️ Zonkracht-drempel"
+      description: >
+        Zonkracht is de gemeten straling als percentage van wat er bij een
+        onbewolkte hemel op de huidige zonshoogte maximaal mogelijk is. 100% is
+        volle zon, rond 20% is grijs weer. Voorbeeld: begin oktober om 13:00 is
+        bij heldere hemel ~550 W/m² mogelijk; meet de sensor 275 W/m², dan is de
+        zonkracht 50%. Zo telt een lage najaarszon even zwaar als een hoge
+        zomerzon. De zonwering sluit als de zonkracht boven deze drempel ligt
+        (en de zon in het zonvenster staat). De actuele zonkracht staat in de
+        trace als v_sun_strength.
+      default: 50
+      selector:
+        number:
+          min: 10
+          max: 100
+          step: 5
+          unit_of_measurement: "%"
+          mode: slider
+
+    heat_avg_temp_entity:
+      name: "🔥 Gemiddelde buitentemperatuur (24 uur)"
+      description: >
+        Voortschrijdend 24-uursgemiddelde van de buitentemperatuur, bijvoorbeeld
+        de gemiddelde buitentemperatuur van de warmtepomp. Ligt dit onder de
+        stookgrens, dan heeft het huis warmte nodig en schakelen gevels met
+        warmtemodus over op zon binnenhalen.
+      default: sensor.luxtronik_281211_0164_outdoor_temperature_average
+      selector:
+        entity:
+          domain: sensor
+
+    heat_threshold:
+      name: "🔥 Stookgrens warmtemodus"
+      description: >
+        Onder dit 24-uursgemiddelde van de buitentemperatuur heeft het huis
+        (zonder zon) warmte nodig. Gaan de screens dan dicht, dan moet de
+        warmtepomp die warmte leveren; daarom blijven ze in de warmtemodus open.
+      default: 15
+      selector:
+        number:
+          min: 5
+          max: 20
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: slider
+
+    facade_a_settings:
+      name: "🏠 Gevel A"
+      icon: mdi:home
+      collapsed: false
+      input:
+        facade_a_heat_mode:
+          name: "Warmtemodus - gevel A"
+          description: >
+            Als de gemiddelde buitentemperatuur onder de stookgrens ligt, sluit
+            deze gevel niet voor de zon en gaat hij open om zonnewarmte binnen
+            te laten (de toegestane richting blijft gelden).
+          default: true
+          selector:
+            boolean: {}
+        facade_a_react_to_rain:
+          name: "Bedienen bij regen - gevel A"
+          description: >
+            Laat deze gevel reageren op regen: direct open (cooldown
+            genegeerd) zodra het gaat regenen. Uitzetten negeert regen
+            volledig voor deze gevel - hij reageert dan alleen nog op
+            zonstand en straling.
+          default: true
+          selector:
+            boolean: {}
+        facade_a_covers:
+          name: "Zonwering gevel A"
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: cover
+        facade_a_azimuth:
+          name: "Azimuth gevel A"
+          default: 160
+          selector:
+            number:
+              min: 0
+              max: 359
+              step: 1
+              unit_of_measurement: "°"
+              mode: slider
+        facade_a_min_elevation:
+          name: "Minimale zonshoogte gevel A"
+          default: 15
+          selector:
+            number:
+              min: 0
+              max: 90
+              step: 1
+              unit_of_measurement: "°"
+              mode: slider
+        facade_a_sun_window:
+          name: "Zonvenster afwijking (±) gevel A"
+          description: "Maximale afwijking van de azimuth, aan beide kanten. Bij azimuth 160° en 80° hier staat het venster dus van 80° tot 240°."
+          default: 80
+          selector:
+            number:
+              min: 10
+              max: 180
+              step: 1
+              unit_of_measurement: "°"
+              mode: slider
+        facade_a_season_correction:
+          name: "Seizoenscorrectie zonvenster - gevel A"
+          description: >
+            Stem het zonvenster af in de zomer (rond de langste dag). Buiten de
+            zomer is de zonneboog korter; met deze correctie schuift de
+            venstergrens mee, zodat de zonwering op hetzelfde relatieve moment
+            van de dag schakelt als in de zomer. 'Middagkant' corrigeert alleen
+            het moment van openen in de middag, 'Ochtendkant' alleen het
+            sluiten in de ochtend.
+          default: afternoon
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - value: "off"
+                  label: "Uit (vaste azimuth-grenzen)"
+                - value: afternoon
+                  label: "Middagkant"
+                - value: morning
+                  label: "Ochtendkant"
+                - value: both
+                  label: "Beide kanten"
+        facade_a_season_strength:
+          name: "Sterkte seizoenscorrectie - gevel A"
+          description: >
+            100% schuift de venstergrens volledig mee met de kortere zonneboog,
+            0% houdt de zomergrens aan. Lage zon schijnt dieper naar binnen, dus
+            volledige correctie opent buiten de zomer vaak te vroeg. In de zomer
+            maakt deze instelling geen verschil.
+          default: 50
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 5
+              unit_of_measurement: "%"
+              mode: slider
+        facade_a_cooldown_minutes:
+          name: "Cooldown gevel A"
+          default: 20
+          selector:
+            number:
+              min: 5
+              max: 60
+              step: 1
+              unit_of_measurement: "min"
+              mode: slider
+        facade_a_direction:
+          name: "Toegestane richting - gevel A"
+          description: >
+            'Alleen sluiten' laat deze gevel nooit automatisch openen (ook
+            niet bij regen of als de zon het zonvenster verlaat) - handig
+            als je 'm liever zelf weer open doet. 'Alleen openen' laat 'm
+            nooit automatisch sluiten.
+          default: both
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - value: both
+                  label: "Beide (open en dicht)"
+                - value: close_only
+                  label: "Alleen sluiten"
+                - value: open_only
+                  label: "Alleen openen"
+        facade_a_closed_position:
+          name: "Positie 'dicht' gevel A"
+          description: "Cover-positie die wordt gebruikt als de zonwering moet sluiten (0 = volledig dicht)."
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
+        facade_a_open_position:
+          name: "Positie 'open' gevel A"
+          description: "Cover-positie die wordt gebruikt als de zonwering moet openen (100 = volledig open)."
+          default: 100
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
+
+    facade_b_settings:
+      name: "🏡 Gevel B"
+      icon: mdi:home-outline
+      collapsed: false
+      input:
+        facade_b_heat_mode:
+          name: "Warmtemodus - gevel B"
+          description: >
+            Als de gemiddelde buitentemperatuur onder de stookgrens ligt, sluit
+            deze gevel niet voor de zon en gaat hij open om zonnewarmte binnen
+            te laten (de toegestane richting blijft gelden).
+          default: true
+          selector:
+            boolean: {}
+        facade_b_react_to_rain:
+          name: "Bedienen bij regen - gevel B"
+          description: >
+            Laat deze gevel reageren op regen: direct open (cooldown
+            genegeerd) zodra het gaat regenen. Uitzetten negeert regen
+            volledig voor deze gevel - hij reageert dan alleen nog op
+            zonstand en straling.
+          default: true
+          selector:
+            boolean: {}
+        facade_b_covers:
+          name: "Zonwering gevel B"
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: cover
+        facade_b_azimuth:
+          name: "Azimuth gevel B"
+          default: 340
+          selector:
+            number:
+              min: 0
+              max: 359
+              step: 1
+              unit_of_measurement: "°"
+              mode: slider
+        facade_b_min_elevation:
+          name: "Minimale zonshoogte gevel B"
+          default: 15
+          selector:
+            number:
+              min: 0
+              max: 90
+              step: 1
+              unit_of_measurement: "°"
+              mode: slider
+        facade_b_sun_window:
+          name: "Zonvenster afwijking (±) gevel B"
+          description: "Maximale afwijking van de azimuth, aan beide kanten. Bij azimuth 340° en 80° hier staat het venster dus van 260° tot 60°."
+          default: 80
+          selector:
+            number:
+              min: 10
+              max: 180
+              step: 1
+              unit_of_measurement: "°"
+              mode: slider
+        facade_b_season_correction:
+          name: "Seizoenscorrectie zonvenster - gevel B"
+          description: >
+            Stem het zonvenster af in de zomer (rond de langste dag). Buiten de
+            zomer is de zonneboog korter; met deze correctie schuift de
+            venstergrens mee, zodat de zonwering op hetzelfde relatieve moment
+            van de dag schakelt als in de zomer. 'Middagkant' corrigeert alleen
+            het moment van openen in de middag, 'Ochtendkant' alleen het
+            sluiten in de ochtend.
+          default: afternoon
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - value: "off"
+                  label: "Uit (vaste azimuth-grenzen)"
+                - value: afternoon
+                  label: "Middagkant"
+                - value: morning
+                  label: "Ochtendkant"
+                - value: both
+                  label: "Beide kanten"
+        facade_b_season_strength:
+          name: "Sterkte seizoenscorrectie - gevel B"
+          description: >
+            100% schuift de venstergrens volledig mee met de kortere zonneboog,
+            0% houdt de zomergrens aan. Lage zon schijnt dieper naar binnen, dus
+            volledige correctie opent buiten de zomer vaak te vroeg. In de zomer
+            maakt deze instelling geen verschil.
+          default: 50
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 5
+              unit_of_measurement: "%"
+              mode: slider
+        facade_b_cooldown_minutes:
+          name: "Cooldown gevel B"
+          default: 20
+          selector:
+            number:
+              min: 5
+              max: 60
+              step: 1
+              unit_of_measurement: "min"
+              mode: slider
+        facade_b_direction:
+          name: "Toegestane richting - gevel B"
+          description: >
+            'Alleen sluiten' laat deze gevel nooit automatisch openen (ook
+            niet bij regen of als de zon het zonvenster verlaat) - handig
+            als je 'm liever zelf weer open doet. 'Alleen openen' laat 'm
+            nooit automatisch sluiten.
+          default: both
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - value: both
+                  label: "Beide (open en dicht)"
+                - value: close_only
+                  label: "Alleen sluiten"
+                - value: open_only
+                  label: "Alleen openen"
+        facade_b_closed_position:
+          name: "Positie 'dicht' gevel B"
+          description: "Cover-positie die wordt gebruikt als de zonwering moet sluiten (0 = volledig dicht)."
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
+        facade_b_open_position:
+          name: "Positie 'open' gevel B"
+          description: "Cover-positie die wordt gebruikt als de zonwering moet openen (100 = volledig open)."
+          default: 100
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
+
+mode: single
+max_exceeded: silent
+
+trigger_variables:
+  tv_azimuth_entity: !input azimuth_entity
+  tv_elevation_entity: !input elevation_entity
+  tv_radiation_entity: !input radiation_entity
+  tv_sun_strength_threshold: !input sun_strength_threshold
+  tv_a_azimuth: !input facade_a_azimuth
+  tv_a_sun_window: !input facade_a_sun_window
+  tv_a_min_elevation: !input facade_a_min_elevation
+  tv_a_season_correction: !input facade_a_season_correction
+  tv_a_season_strength: !input facade_a_season_strength
+  tv_a_covers: !input facade_a_covers
+  tv_a_cooldown_minutes: !input facade_a_cooldown_minutes
+  tv_b_azimuth: !input facade_b_azimuth
+  tv_b_sun_window: !input facade_b_sun_window
+  tv_b_min_elevation: !input facade_b_min_elevation
+  tv_b_season_correction: !input facade_b_season_correction
+  tv_b_season_strength: !input facade_b_season_strength
+  tv_b_covers: !input facade_b_covers
+  tv_b_cooldown_minutes: !input facade_b_cooldown_minutes
+
+# Alleen triggeren op momenten waarop er iets kan veranderen; elke run levert
+# een trace op, dus op elke sensorupdate triggeren verdringt de relevante traces.
+trigger:
+  - platform: state
+    entity_id: !input rain_entity
+    to: ~
+    id: rain
+  # Zonkracht gaat over de drempel. Moet exact dezelfde berekening zijn als
+  # v_sun_strength en v_sun_strong.
+  - platform: template
+    id: radiation
+    for: "00:05:00"
+    value_template: >
+      {% set h = states(tv_elevation_entity) | float(-90) %}
+      {% set s = sin(h * pi / 180) %}
+      {% set clear = 1098 * s * e ** (-0.057 / s) if h > 5 else 0 %}
+      {% set pct = 100 * (states(tv_radiation_entity) | float(0)) / clear if clear > 0 else 0 %}
+      {{ pct >= tv_sun_strength_threshold | float }}
+  - platform: template
+    id: radiation
+    for: "00:05:00"
+    value_template: >
+      {% set h = states(tv_elevation_entity) | float(-90) %}
+      {% set s = sin(h * pi / 180) %}
+      {% set clear = 1098 * s * e ** (-0.057 / s) if h > 5 else 0 %}
+      {% set pct = 100 * (states(tv_radiation_entity) | float(0)) / clear if clear > 0 else 0 %}
+      {{ pct < tv_sun_strength_threshold | float }}
+  - platform: numeric_state
+    entity_id: !input heat_avg_temp_entity
+    below: !input heat_threshold
+    id: heat
+  - platform: numeric_state
+    entity_id: !input heat_avg_temp_entity
+    above: !input heat_threshold
+    id: heat
+
+  # Zon komt in / gaat uit het zonvenster. Moet exact dezelfde berekening zijn
+  # als v_sun_arc_ratio, v_facade_x_azimuth_eff en v_facade_x_in_window.
+  - platform: template
+    id: sun_a
+    value_template: >
+      {% set lat = (state_attr('zone.home', 'latitude') | float(52)) * pi / 180 %}
+      {% set doy = now().strftime('%j') | int %}
+      {% set decl = 23.44 * sin(2 * pi * (doy - 81) / 365) * pi / 180 %}
+      {% set decl_ref = 23.44 * pi / 180 %}
+      {% set x = [[sin(decl) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set x_ref = [[sin(decl_ref) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set ratio = (180 - acos(x_ref) * 180 / pi) / (180 - acos(x) * 180 / pi) %}
+      {% set r = (states(tv_azimuth_entity) | float(0) % 360) - 180 %}
+      {% if (r >= 0 and tv_a_season_correction in ['afternoon', 'both'])
+         or (r < 0 and tv_a_season_correction in ['morning', 'both']) %}
+        {% set r = r * (1 + (tv_a_season_strength | float(100)) / 100 * (ratio - 1)) %}
+      {% endif %}
+      {% set diff = ((180 + r - tv_a_azimuth | float + 180) % 360) - 180 %}
+      {{ (diff | abs) <= (tv_a_sun_window | float)
+         and (states(tv_elevation_entity) | float(-90) >= tv_a_min_elevation | float) }}
+  - platform: template
+    id: sun_a
+    value_template: >
+      {% set lat = (state_attr('zone.home', 'latitude') | float(52)) * pi / 180 %}
+      {% set doy = now().strftime('%j') | int %}
+      {% set decl = 23.44 * sin(2 * pi * (doy - 81) / 365) * pi / 180 %}
+      {% set decl_ref = 23.44 * pi / 180 %}
+      {% set x = [[sin(decl) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set x_ref = [[sin(decl_ref) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set ratio = (180 - acos(x_ref) * 180 / pi) / (180 - acos(x) * 180 / pi) %}
+      {% set r = (states(tv_azimuth_entity) | float(0) % 360) - 180 %}
+      {% if (r >= 0 and tv_a_season_correction in ['afternoon', 'both'])
+         or (r < 0 and tv_a_season_correction in ['morning', 'both']) %}
+        {% set r = r * (1 + (tv_a_season_strength | float(100)) / 100 * (ratio - 1)) %}
+      {% endif %}
+      {% set diff = ((180 + r - tv_a_azimuth | float + 180) % 360) - 180 %}
+      {{ not ((diff | abs) <= (tv_a_sun_window | float)
+         and (states(tv_elevation_entity) | float(-90) >= tv_a_min_elevation | float)) }}
+  - platform: template
+    id: sun_b
+    value_template: >
+      {% set lat = (state_attr('zone.home', 'latitude') | float(52)) * pi / 180 %}
+      {% set doy = now().strftime('%j') | int %}
+      {% set decl = 23.44 * sin(2 * pi * (doy - 81) / 365) * pi / 180 %}
+      {% set decl_ref = 23.44 * pi / 180 %}
+      {% set x = [[sin(decl) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set x_ref = [[sin(decl_ref) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set ratio = (180 - acos(x_ref) * 180 / pi) / (180 - acos(x) * 180 / pi) %}
+      {% set r = (states(tv_azimuth_entity) | float(0) % 360) - 180 %}
+      {% if (r >= 0 and tv_b_season_correction in ['afternoon', 'both'])
+         or (r < 0 and tv_b_season_correction in ['morning', 'both']) %}
+        {% set r = r * (1 + (tv_b_season_strength | float(100)) / 100 * (ratio - 1)) %}
+      {% endif %}
+      {% set diff = ((180 + r - tv_b_azimuth | float + 180) % 360) - 180 %}
+      {{ (diff | abs) <= (tv_b_sun_window | float)
+         and (states(tv_elevation_entity) | float(-90) >= tv_b_min_elevation | float) }}
+  - platform: template
+    id: sun_b
+    value_template: >
+      {% set lat = (state_attr('zone.home', 'latitude') | float(52)) * pi / 180 %}
+      {% set doy = now().strftime('%j') | int %}
+      {% set decl = 23.44 * sin(2 * pi * (doy - 81) / 365) * pi / 180 %}
+      {% set decl_ref = 23.44 * pi / 180 %}
+      {% set x = [[sin(decl) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set x_ref = [[sin(decl_ref) / cos(lat), 0.99] | min, -0.99] | max %}
+      {% set ratio = (180 - acos(x_ref) * 180 / pi) / (180 - acos(x) * 180 / pi) %}
+      {% set r = (states(tv_azimuth_entity) | float(0) % 360) - 180 %}
+      {% if (r >= 0 and tv_b_season_correction in ['afternoon', 'both'])
+         or (r < 0 and tv_b_season_correction in ['morning', 'both']) %}
+        {% set r = r * (1 + (tv_b_season_strength | float(100)) / 100 * (ratio - 1)) %}
+      {% endif %}
+      {% set diff = ((180 + r - tv_b_azimuth | float + 180) % 360) - 180 %}
+      {{ not ((diff | abs) <= (tv_b_sun_window | float)
+         and (states(tv_elevation_entity) | float(-90) >= tv_b_min_elevation | float)) }}
+
+  # Cooldown verlopen: een beweging die door de cooldown werd tegengehouden
+  # alsnog uitvoeren.
+  - platform: template
+    id: cooldown_a
+    value_template: >
+      {% set ns = namespace(ok=true) %}
+      {% for c in tv_a_covers %}
+        {% if states[c] is not none
+           and now() - states[c].last_updated < timedelta(minutes=tv_a_cooldown_minutes | float) %}
+          {% set ns.ok = false %}
+        {% endif %}
+      {% endfor %}
+      {{ ns.ok and tv_a_covers | length > 0 }}
+  - platform: template
+    id: cooldown_b
+    value_template: >
+      {% set ns = namespace(ok=true) %}
+      {% for c in tv_b_covers %}
+        {% if states[c] is not none
+           and now() - states[c].last_updated < timedelta(minutes=tv_b_cooldown_minutes | float) %}
+          {% set ns.ok = false %}
+        {% endif %}
+      {% endfor %}
+      {{ ns.ok and tv_b_covers | length > 0 }}
+
+  - platform: homeassistant
+    event: start
+    id: ha_start
+
+variables:
+  rain_entity: !input rain_entity
+  radiation_entity: !input radiation_entity
+  sun_strength_threshold: !input sun_strength_threshold
+  azimuth_entity: !input azimuth_entity
+  elevation_entity: !input elevation_entity
+  heat_avg_temp_entity: !input heat_avg_temp_entity
+  heat_threshold: !input heat_threshold
+
+  facade_a_heat_mode: !input facade_a_heat_mode
+  facade_a_react_to_rain: !input facade_a_react_to_rain
+  facade_a_covers: !input facade_a_covers
+  facade_a_azimuth: !input facade_a_azimuth
+  facade_a_min_elevation: !input facade_a_min_elevation
+  facade_a_sun_window: !input facade_a_sun_window
+  facade_a_season_correction: !input facade_a_season_correction
+  facade_a_season_strength: !input facade_a_season_strength
+  facade_a_cooldown_minutes: !input facade_a_cooldown_minutes
+  facade_a_direction: !input facade_a_direction
+  facade_a_closed_position: !input facade_a_closed_position
+  facade_a_open_position: !input facade_a_open_position
+
+  facade_b_heat_mode: !input facade_b_heat_mode
+  facade_b_react_to_rain: !input facade_b_react_to_rain
+  facade_b_covers: !input facade_b_covers
+  facade_b_azimuth: !input facade_b_azimuth
+  facade_b_min_elevation: !input facade_b_min_elevation
+  facade_b_sun_window: !input facade_b_sun_window
+  facade_b_season_correction: !input facade_b_season_correction
+  facade_b_season_strength: !input facade_b_season_strength
+  facade_b_cooldown_minutes: !input facade_b_cooldown_minutes
+  facade_b_direction: !input facade_b_direction
+  facade_b_closed_position: !input facade_b_closed_position
+  facade_b_open_position: !input facade_b_open_position
+
+  v_raining: "{{ is_state(rain_entity, 'on') }}"
+
+  v_outdoor_avg: "{{ states(heat_avg_temp_entity) | float(99) }}"
+  v_heat_needed: "{{ v_outdoor_avg | float(99) < heat_threshold | float }}"
+
+  # Heldere-hemelstraling op een horizontaal vlak bij de huidige zonshoogte
+  # (Haurwitz); gemeten straling als percentage daarvan is seizoensonafhankelijk.
+  v_clear_sky_radiation: >
+    {% set h = states(elevation_entity) | float(-90) %}
+    {% set s = sin(h * pi / 180) %}
+    {{ 1098 * s * e ** (-0.057 / s) if h > 5 else 0 }}
+  v_sun_strength: >
+    {% set clear = v_clear_sky_radiation | float(0) %}
+    {{ 100 * (states(radiation_entity) | float(0)) / clear if clear > 0 else 0 }}
+
+  v_sun_strong: "{{ v_sun_strength | float(0) >= sun_strength_threshold | float }}"
+
+  # Verhouding tussen de halve zonneboog (zuid -> zonsondergang) op de langste
+  # dag en vandaag; > 1 buiten de zomer. Declinatie benaderd uit de dag van het jaar.
+  v_sun_arc_ratio: >
+    {% set lat = (state_attr('zone.home', 'latitude') | float(52)) * pi / 180 %}
+    {% set doy = now().strftime('%j') | int %}
+    {% set decl = 23.44 * sin(2 * pi * (doy - 81) / 365) * pi / 180 %}
+    {% set decl_ref = 23.44 * pi / 180 %}
+    {% set x = [[sin(decl) / cos(lat), 0.99] | min, -0.99] | max %}
+    {% set x_ref = [[sin(decl_ref) / cos(lat), 0.99] | min, -0.99] | max %}
+    {% set arc = 180 - acos(x) * 180 / pi %}
+    {% set arc_ref = 180 - acos(x_ref) * 180 / pi %}
+    {{ arc_ref / arc }}
+
+  v_sun_azimuth: "{{ states(azimuth_entity) | float(0) }}"
+
+  v_facade_a_azimuth_eff: >
+    {% set r = (v_sun_azimuth | float % 360) - 180 %}
+    {% if (r >= 0 and facade_a_season_correction in ['afternoon', 'both'])
+       or (r < 0 and facade_a_season_correction in ['morning', 'both']) %}
+      {% set r = r * (1 + (facade_a_season_strength | float(100)) / 100 * (v_sun_arc_ratio | float(1) - 1)) %}
+    {% endif %}
+    {{ 180 + r }}
+
+  v_facade_a_in_window: >
+    {% set diff = ((v_facade_a_azimuth_eff | float - facade_a_azimuth | float + 180) % 360) - 180 %}
+    {{ (diff | abs) <= (facade_a_sun_window | float)
+       and (states(elevation_entity) | float(-90) >= facade_a_min_elevation | float) }}
+
+  v_facade_a_can_open: "{{ facade_a_direction in ['both', 'open_only'] }}"
+  v_facade_a_can_close: "{{ facade_a_direction in ['both', 'close_only'] }}"
+
+  v_facade_a_rain_active: "{{ v_raining | bool and facade_a_react_to_rain | bool }}"
+  v_facade_a_heat_active: "{{ v_heat_needed | bool and facade_a_heat_mode | bool }}"
+  v_facade_a_force_close: >
+    {{ (not v_facade_a_rain_active | bool) and (not v_facade_a_heat_active | bool)
+       and v_facade_a_in_window | bool and v_sun_strong | bool }}
+  v_facade_a_force_open: >
+    {{ v_facade_a_rain_active | bool or v_facade_a_heat_active | bool
+       or not (v_facade_a_in_window | bool) }}
+  v_facade_a_action_close: "{{ v_facade_a_force_close | bool and v_facade_a_can_close | bool }}"
+  v_facade_a_action_open: "{{ v_facade_a_force_open | bool and v_facade_a_can_open | bool }}"
+  v_facade_a_target: "{{ facade_a_closed_position | int if v_facade_a_action_close | bool else facade_a_open_position | int }}"
+
+  v_facade_a_reason: >
+    {% set why = 'regen' if v_facade_a_rain_active | bool
+       else ('warmtemodus (buiten gem. ' ~ v_outdoor_avg ~ '°C < ' ~ heat_threshold ~ '°C)') if v_facade_a_heat_active | bool
+       else 'zon buiten zonvenster' %}
+    {{ why ~ ' -> open'
+       if v_facade_a_force_open | bool and v_facade_a_can_open | bool
+       else why ~ ' -> zou open moeten, maar richting staat op alleen sluiten'
+       if v_facade_a_force_open | bool
+       else 'zon in venster + zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% -> dicht'
+       if v_facade_a_force_close | bool and v_facade_a_can_close | bool
+       else 'zon in venster + zonkracht boven drempel -> zou dicht moeten, maar richting staat op alleen openen'
+       if v_facade_a_force_close | bool
+       else 'zon in venster, zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '% -> ongewijzigd' }}
+
+  v_facade_a_override_active: >
+    {% set ns = namespace(active=false) %}
+    {% for c in facade_a_covers %}
+      {% set st = states[c] %}
+      {% if st is not none and st.context.user_id is not none and st.last_updated.date() == now().date() %}
+        {% set ns.active = true %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.active }}
+
+  v_facade_a_cooldown_ok: >
+    {% set secs = facade_a_cooldown_minutes | float(20) * 60 %}
+    {% set ns = namespace(ok=true) %}
+    {% for c in facade_a_covers %}
+      {% if (as_timestamp(now()) - as_timestamp(states[c].last_updated)) < secs %}
+        {% set ns.ok = false %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.ok }}
+
+  v_facade_a_needs_move: >
+    {% set target = v_facade_a_target | int %}
+    {% set ns = namespace(needs=false) %}
+    {% for c in facade_a_covers %}
+      {% if state_attr(c, 'current_position') | int(-1) != target %}
+        {% set ns.needs = true %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.needs }}
+
+  v_facade_b_azimuth_eff: >
+    {% set r = (v_sun_azimuth | float % 360) - 180 %}
+    {% if (r >= 0 and facade_b_season_correction in ['afternoon', 'both'])
+       or (r < 0 and facade_b_season_correction in ['morning', 'both']) %}
+      {% set r = r * (1 + (facade_b_season_strength | float(100)) / 100 * (v_sun_arc_ratio | float(1) - 1)) %}
+    {% endif %}
+    {{ 180 + r }}
+
+  v_facade_b_in_window: >
+    {% set diff = ((v_facade_b_azimuth_eff | float - facade_b_azimuth | float + 180) % 360) - 180 %}
+    {{ (diff | abs) <= (facade_b_sun_window | float)
+       and (states(elevation_entity) | float(-90) >= facade_b_min_elevation | float) }}
+
+  v_facade_b_can_open: "{{ facade_b_direction in ['both', 'open_only'] }}"
+  v_facade_b_can_close: "{{ facade_b_direction in ['both', 'close_only'] }}"
+
+  v_facade_b_rain_active: "{{ v_raining | bool and facade_b_react_to_rain | bool }}"
+  v_facade_b_heat_active: "{{ v_heat_needed | bool and facade_b_heat_mode | bool }}"
+  v_facade_b_force_close: >
+    {{ (not v_facade_b_rain_active | bool) and (not v_facade_b_heat_active | bool)
+       and v_facade_b_in_window | bool and v_sun_strong | bool }}
+  v_facade_b_force_open: >
+    {{ v_facade_b_rain_active | bool or v_facade_b_heat_active | bool
+       or not (v_facade_b_in_window | bool) }}
+  v_facade_b_action_close: "{{ v_facade_b_force_close | bool and v_facade_b_can_close | bool }}"
+  v_facade_b_action_open: "{{ v_facade_b_force_open | bool and v_facade_b_can_open | bool }}"
+  v_facade_b_target: "{{ facade_b_closed_position | int if v_facade_b_action_close | bool else facade_b_open_position | int }}"
+
+  v_facade_b_reason: >
+    {% set why = 'regen' if v_facade_b_rain_active | bool
+       else ('warmtemodus (buiten gem. ' ~ v_outdoor_avg ~ '°C < ' ~ heat_threshold ~ '°C)') if v_facade_b_heat_active | bool
+       else 'zon buiten zonvenster' %}
+    {{ why ~ ' -> open'
+       if v_facade_b_force_open | bool and v_facade_b_can_open | bool
+       else why ~ ' -> zou open moeten, maar richting staat op alleen sluiten'
+       if v_facade_b_force_open | bool
+       else 'zon in venster + zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% -> dicht'
+       if v_facade_b_force_close | bool and v_facade_b_can_close | bool
+       else 'zon in venster + zonkracht boven drempel -> zou dicht moeten, maar richting staat op alleen openen'
+       if v_facade_b_force_close | bool
+       else 'zon in venster, zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '% -> ongewijzigd' }}
+
+  v_facade_b_override_active: >
+    {% set ns = namespace(active=false) %}
+    {% for c in facade_b_covers %}
+      {% set st = states[c] %}
+      {% if st is not none and st.context.user_id is not none and st.last_updated.date() == now().date() %}
+        {% set ns.active = true %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.active }}
+
+  v_facade_b_cooldown_ok: >
+    {% set secs = facade_b_cooldown_minutes | float(20) * 60 %}
+    {% set ns = namespace(ok=true) %}
+    {% for c in facade_b_covers %}
+      {% if (as_timestamp(now()) - as_timestamp(states[c].last_updated)) < secs %}
+        {% set ns.ok = false %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.ok }}
+
+  v_facade_b_needs_move: >
+    {% set target = v_facade_b_target | int %}
+    {% set ns = namespace(needs=false) %}
+    {% for c in facade_b_covers %}
+      {% if state_attr(c, 'current_position') | int(-1) != target %}
+        {% set ns.needs = true %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.needs }}
+
+action:
+  # Gevel A
+  # Cooldown genegeerd zolang v_facade_a_rain_active waar is (het regent en
+  # facade_a_react_to_rain staat aan), zodat de zonwering direct omhoog gaat
+  # i.p.v. nat te worden; bij einde regen geldt de cooldown weer normaal.
+  - if:
+      - condition: template
+        alias: "Covers geconfigureerd voor gevel A"
+        value_template: "{{ facade_a_covers | length > 0 }}"
+      - condition: template
+        alias: "Geen handmatige override vandaag - gevel A"
+        value_template: "{{ not v_facade_a_override_active | bool }}"
+      - condition: or
+        alias: "Zonstand/regen/straling vraagt om open of dicht - gevel A"
+        conditions:
+          - condition: and
+            alias: "Forceer dicht - gevel A (geen regen, geen warmtemodus, zon in venster, zonkracht boven drempel, richting staat sluiten toe)"
+            conditions:
+              - condition: template
+                alias: "Geen regen (of regen genegeerd) - gevel A"
+                value_template: "{{ not v_facade_a_rain_active | bool }}"
+              - condition: template
+                alias: "Geen warmtemodus (geen warmte nodig of uitgeschakeld) - gevel A"
+                value_template: "{{ not v_facade_a_heat_active | bool }}"
+              - condition: template
+                alias: "Zon in zonvenster - gevel A"
+                value_template: "{{ v_facade_a_in_window | bool }}"
+              - condition: template
+                alias: "Zonkracht boven drempel - gevel A"
+                value_template: "{{ v_sun_strong | bool }}"
+              - condition: template
+                alias: "Richting staat sluiten toe - gevel A"
+                value_template: "{{ v_facade_a_can_close | bool }}"
+          - condition: and
+            alias: "Forceer open - gevel A (regen, warmtemodus of buiten zonvenster, richting staat openen toe)"
+            conditions:
+              - condition: or
+                alias: "Regen actief, warmtemodus of zon buiten zonvenster - gevel A"
+                conditions:
+                  - condition: template
+                    alias: "Regen actief - gevel A"
+                    value_template: "{{ v_facade_a_rain_active | bool }}"
+                  - condition: template
+                    alias: "Warmtemodus: warmte nodig, zon binnenhalen - gevel A"
+                    value_template: "{{ v_facade_a_heat_active | bool }}"
+                  - condition: template
+                    alias: "Zon buiten zonvenster - gevel A"
+                    value_template: "{{ not (v_facade_a_in_window | bool) }}"
+              - condition: template
+                alias: "Richting staat openen toe - gevel A"
+                value_template: "{{ v_facade_a_can_open | bool }}"
+      - condition: template
+        alias: "Cooldown voorbij of regen forceert direct - gevel A"
+        value_template: "{{ v_facade_a_cooldown_ok | bool or v_facade_a_rain_active | bool }}"
+      - condition: template
+        alias: "Cover-positie moet nog wijzigen - gevel A"
+        value_template: "{{ v_facade_a_needs_move | bool }}"
+    then:
+      - service: cover.set_cover_position
+        target:
+          entity_id: !input facade_a_covers
+        data:
+          position: "{{ v_facade_a_target }}"
+
+  # Gevel B
+  # Cooldown genegeerd zolang v_facade_b_rain_active waar is (het regent en
+  # facade_b_react_to_rain staat aan), zodat de zonwering direct omhoog gaat
+  # i.p.v. nat te worden; bij einde regen geldt de cooldown weer normaal.
+  - if:
+      - condition: template
+        alias: "Covers geconfigureerd voor gevel B"
+        value_template: "{{ facade_b_covers | length > 0 }}"
+      - condition: template
+        alias: "Geen handmatige override vandaag - gevel B"
+        value_template: "{{ not v_facade_b_override_active | bool }}"
+      - condition: or
+        alias: "Zonstand/regen/straling vraagt om open of dicht - gevel B"
+        conditions:
+          - condition: and
+            alias: "Forceer dicht - gevel B (geen regen, geen warmtemodus, zon in venster, zonkracht boven drempel, richting staat sluiten toe)"
+            conditions:
+              - condition: template
+                alias: "Geen regen (of regen genegeerd) - gevel B"
+                value_template: "{{ not v_facade_b_rain_active | bool }}"
+              - condition: template
+                alias: "Geen warmtemodus (geen warmte nodig of uitgeschakeld) - gevel B"
+                value_template: "{{ not v_facade_b_heat_active | bool }}"
+              - condition: template
+                alias: "Zon in zonvenster - gevel B"
+                value_template: "{{ v_facade_b_in_window | bool }}"
+              - condition: template
+                alias: "Zonkracht boven drempel - gevel B"
+                value_template: "{{ v_sun_strong | bool }}"
+              - condition: template
+                alias: "Richting staat sluiten toe - gevel B"
+                value_template: "{{ v_facade_b_can_close | bool }}"
+          - condition: and
+            alias: "Forceer open - gevel B (regen, warmtemodus of buiten zonvenster, richting staat openen toe)"
+            conditions:
+              - condition: or
+                alias: "Regen actief, warmtemodus of zon buiten zonvenster - gevel B"
+                conditions:
+                  - condition: template
+                    alias: "Regen actief - gevel B"
+                    value_template: "{{ v_facade_b_rain_active | bool }}"
+                  - condition: template
+                    alias: "Warmtemodus: warmte nodig, zon binnenhalen - gevel B"
+                    value_template: "{{ v_facade_b_heat_active | bool }}"
+                  - condition: template
+                    alias: "Zon buiten zonvenster - gevel B"
+                    value_template: "{{ not (v_facade_b_in_window | bool) }}"
+              - condition: template
+                alias: "Richting staat openen toe - gevel B"
+                value_template: "{{ v_facade_b_can_open | bool }}"
+      - condition: template
+        alias: "Cooldown voorbij of regen forceert direct - gevel B"
+        value_template: "{{ v_facade_b_cooldown_ok | bool or v_facade_b_rain_active | bool }}"
+      - condition: template
+        alias: "Cover-positie moet nog wijzigen - gevel B"
+        value_template: "{{ v_facade_b_needs_move | bool }}"
+    then:
+      - service: cover.set_cover_position
+        target:
+          entity_id: !input facade_b_covers
+        data:
+          position: "{{ v_facade_b_target }}"
