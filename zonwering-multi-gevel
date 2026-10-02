@@ -1,18 +1,18 @@
 # Version: 1.0.0
 blueprint:
   domain: automation
-  name: "☀️ Zonwering - zonstand, regen & bewolking (multi-gevel)"
+  name: "☀️ Zonwering - zonstand, regen & straling (multi-gevel)"
   description: >
     Bedient zonwering op basis van zonsazimuth/elevatie per gevel, regen
     (altijd open bij regen, weer dicht zodra het stopt als de conditie nog
-    geldt) en bewolking/straling (dicht bij bewolkt + straling boven
-    drempel, of bij partlycloudy/sunny). De drempel is relatief: straling als
-    percentage van heldere hemel bij de huidige zonshoogte. Zakt de straling bij bewolkt weer
-    onder de drempel terwijl de zon nog in het venster staat, dan wordt er
-    niet geforceerd open gegaan - de zonwering blijft dan gewoon staan.
+    geldt) en de gemeten zonkracht (dicht als de straling boven de drempel
+    ligt). De drempel is relatief: straling als percentage van heldere hemel
+    bij de huidige zonshoogte. Zakt de zonkracht weer onder de drempel terwijl
+    de zon nog in het venster staat, dan wordt er niet geforceerd open gegaan -
+    de zonwering blijft dan gewoon staan.
     Per gevel is instelbaar of hij op regen reageert: staat dat uit, dan
     negeert die gevel regen volledig en bedient hij alleen op zonstand en
-    bewolking/straling. Ook is per gevel instelbaar of hij mag openen,
+    straling. Ook is per gevel instelbaar of hij mag openen,
     sluiten, of beide - 'alleen sluiten' laat een gevel bijvoorbeeld nooit
     automatisch weer opengaan zodra de zon weg is. Het zonvenster wordt in
     de zomer afgesteld; een seizoenscorrectie laat de venstergrens daarna
@@ -32,12 +32,6 @@ blueprint:
       selector:
         entity:
           domain: binary_sensor
-
-    weather_entity:
-      name: "🌤️ Weather entity (bewolking)"
-      selector:
-        entity:
-          domain: weather
 
     radiation_entity:
       name: "☀️ Stralingssensor (W/m²)"
@@ -67,15 +61,13 @@ blueprint:
           domain: sensor
 
     sun_strength_threshold:
-      name: "☁️ Zonkracht-drempel bij bewolkt"
+      name: "☀️ Zonkracht-drempel"
       description: >
-        Bij weather-status 'cloudy' toch sluiten als de gemeten straling boven
-        dit percentage ligt van wat er bij heldere hemel op de huidige
-        zonshoogte mogelijk is. Daardoor werkt de drempel het hele jaar gelijk:
-        een lage najaarszon geeft minder W/m², maar telt naar verhouding even
-        zwaar. Bij 'partlycloudy' of 'sunny' wordt altijd gesloten (mits
-        zonvenster klopt), ongeacht straling.
-      default: 30
+        Sluiten als de gemeten straling boven dit percentage ligt van wat er
+        bij heldere hemel op de huidige zonshoogte mogelijk is. Daardoor werkt
+        de drempel het hele jaar gelijk: een lage najaarszon geeft minder W/m²,
+        maar telt naar verhouding even zwaar.
+      default: 50
       selector:
         number:
           min: 10
@@ -131,7 +123,7 @@ blueprint:
             Laat deze gevel reageren op regen: direct open (cooldown
             genegeerd) zodra het gaat regenen. Uitzetten negeert regen
             volledig voor deze gevel - hij reageert dan alleen nog op
-            zonstand en bewolking/straling.
+            zonstand en straling.
           default: true
           selector:
             boolean: {}
@@ -282,7 +274,7 @@ blueprint:
             Laat deze gevel reageren op regen: direct open (cooldown
             genegeerd) zodra het gaat regenen. Uitzetten negeert regen
             volledig voor deze gevel - hij reageert dan alleen nog op
-            zonstand en bewolking/straling.
+            zonstand en straling.
           default: true
           selector:
             boolean: {}
@@ -443,12 +435,8 @@ trigger:
     entity_id: !input rain_entity
     to: ~
     id: rain
-  - platform: state
-    entity_id: !input weather_entity
-    to: ~
-    id: weather
   # Zonkracht gaat over de drempel. Moet exact dezelfde berekening zijn als
-  # v_sun_strength en de vergelijking in v_weather_ok.
+  # v_sun_strength en v_sun_strong.
   - platform: template
     id: radiation
     for: "00:05:00"
@@ -582,7 +570,6 @@ trigger:
 
 variables:
   rain_entity: !input rain_entity
-  weather_entity: !input weather_entity
   radiation_entity: !input radiation_entity
   sun_strength_threshold: !input sun_strength_threshold
   azimuth_entity: !input azimuth_entity
@@ -631,10 +618,7 @@ variables:
     {% set clear = v_clear_sky_radiation | float(0) %}
     {{ 100 * (states(radiation_entity) | float(0)) / clear if clear > 0 else 0 }}
 
-  v_weather_ok: >
-    {% set w = states(weather_entity) %}
-    {{ w in ['sunny', 'clear-night', 'partlycloudy']
-       or (w == 'cloudy' and v_sun_strength | float(0) >= sun_strength_threshold | float) }}
+  v_sun_strong: "{{ v_sun_strength | float(0) >= sun_strength_threshold | float }}"
 
   # Verhouding tussen de halve zonneboog (zuid -> zonsondergang) op de langste
   # dag en vandaag; > 1 buiten de zomer. Declinatie benaderd uit de dag van het jaar.
@@ -671,7 +655,7 @@ variables:
   v_facade_a_heat_active: "{{ v_heat_needed | bool and facade_a_heat_mode | bool }}"
   v_facade_a_force_close: >
     {{ (not v_facade_a_rain_active | bool) and (not v_facade_a_heat_active | bool)
-       and v_facade_a_in_window | bool and v_weather_ok | bool }}
+       and v_facade_a_in_window | bool and v_sun_strong | bool }}
   v_facade_a_force_open: >
     {{ v_facade_a_rain_active | bool or v_facade_a_heat_active | bool
        or not (v_facade_a_in_window | bool) }}
@@ -687,11 +671,11 @@ variables:
        if v_facade_a_force_open | bool and v_facade_a_can_open | bool
        else why ~ ' -> zou open moeten, maar richting staat op alleen sluiten'
        if v_facade_a_force_open | bool
-       else 'zon in venster + weer geschikt -> dicht'
+       else 'zon in venster + zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% -> dicht'
        if v_facade_a_force_close | bool and v_facade_a_can_close | bool
-       else 'zon in venster + weer geschikt -> zou dicht moeten, maar richting staat op alleen openen'
+       else 'zon in venster + zonkracht boven drempel -> zou dicht moeten, maar richting staat op alleen openen'
        if v_facade_a_force_close | bool
-       else 'zon in venster, bewolkt en zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '% -> ongewijzigd' }}
+       else 'zon in venster, zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '% -> ongewijzigd' }}
 
   v_facade_a_override_active: >
     {% set ns = namespace(active=false) %}
@@ -743,7 +727,7 @@ variables:
   v_facade_b_heat_active: "{{ v_heat_needed | bool and facade_b_heat_mode | bool }}"
   v_facade_b_force_close: >
     {{ (not v_facade_b_rain_active | bool) and (not v_facade_b_heat_active | bool)
-       and v_facade_b_in_window | bool and v_weather_ok | bool }}
+       and v_facade_b_in_window | bool and v_sun_strong | bool }}
   v_facade_b_force_open: >
     {{ v_facade_b_rain_active | bool or v_facade_b_heat_active | bool
        or not (v_facade_b_in_window | bool) }}
@@ -759,11 +743,11 @@ variables:
        if v_facade_b_force_open | bool and v_facade_b_can_open | bool
        else why ~ ' -> zou open moeten, maar richting staat op alleen sluiten'
        if v_facade_b_force_open | bool
-       else 'zon in venster + weer geschikt -> dicht'
+       else 'zon in venster + zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% -> dicht'
        if v_facade_b_force_close | bool and v_facade_b_can_close | bool
-       else 'zon in venster + weer geschikt -> zou dicht moeten, maar richting staat op alleen openen'
+       else 'zon in venster + zonkracht boven drempel -> zou dicht moeten, maar richting staat op alleen openen'
        if v_facade_b_force_close | bool
-       else 'zon in venster, bewolkt en zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '% -> ongewijzigd' }}
+       else 'zon in venster, zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '% -> ongewijzigd' }}
 
   v_facade_b_override_active: >
     {% set ns = namespace(active=false) %}
@@ -808,10 +792,10 @@ action:
         alias: "Geen handmatige override vandaag - gevel A"
         value_template: "{{ not v_facade_a_override_active | bool }}"
       - condition: or
-        alias: "Zonstand/regen/weer vraagt om open of dicht - gevel A"
+        alias: "Zonstand/regen/straling vraagt om open of dicht - gevel A"
         conditions:
           - condition: and
-            alias: "Forceer dicht - gevel A (geen regen, geen warmtemodus, zon in venster, weer geschikt, richting staat sluiten toe)"
+            alias: "Forceer dicht - gevel A (geen regen, geen warmtemodus, zon in venster, zonkracht boven drempel, richting staat sluiten toe)"
             conditions:
               - condition: template
                 alias: "Geen regen (of regen genegeerd) - gevel A"
@@ -823,8 +807,8 @@ action:
                 alias: "Zon in zonvenster - gevel A"
                 value_template: "{{ v_facade_a_in_window | bool }}"
               - condition: template
-                alias: "Weer geschikt (helder/straling boven drempel) - gevel A"
-                value_template: "{{ v_weather_ok | bool }}"
+                alias: "Zonkracht boven drempel - gevel A"
+                value_template: "{{ v_sun_strong | bool }}"
               - condition: template
                 alias: "Richting staat sluiten toe - gevel A"
                 value_template: "{{ v_facade_a_can_close | bool }}"
@@ -871,10 +855,10 @@ action:
         alias: "Geen handmatige override vandaag - gevel B"
         value_template: "{{ not v_facade_b_override_active | bool }}"
       - condition: or
-        alias: "Zonstand/regen/weer vraagt om open of dicht - gevel B"
+        alias: "Zonstand/regen/straling vraagt om open of dicht - gevel B"
         conditions:
           - condition: and
-            alias: "Forceer dicht - gevel B (geen regen, geen warmtemodus, zon in venster, weer geschikt, richting staat sluiten toe)"
+            alias: "Forceer dicht - gevel B (geen regen, geen warmtemodus, zon in venster, zonkracht boven drempel, richting staat sluiten toe)"
             conditions:
               - condition: template
                 alias: "Geen regen (of regen genegeerd) - gevel B"
@@ -886,8 +870,8 @@ action:
                 alias: "Zon in zonvenster - gevel B"
                 value_template: "{{ v_facade_b_in_window | bool }}"
               - condition: template
-                alias: "Weer geschikt (helder/straling boven drempel) - gevel B"
-                value_template: "{{ v_weather_ok | bool }}"
+                alias: "Zonkracht boven drempel - gevel B"
+                value_template: "{{ v_sun_strong | bool }}"
               - condition: template
                 alias: "Richting staat sluiten toe - gevel B"
                 value_template: "{{ v_facade_b_can_close | bool }}"
