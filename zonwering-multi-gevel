@@ -6,7 +6,8 @@ blueprint:
     Bedient zonwering op basis van zonsazimuth/elevatie per gevel, regen
     (altijd open bij regen, weer dicht zodra het stopt als de conditie nog
     geldt) en bewolking/straling (dicht bij bewolkt + straling boven
-    drempel, of bij partlycloudy/sunny). Zakt de straling bij bewolkt weer
+    drempel, of bij partlycloudy/sunny). De drempel is relatief: straling als
+    percentage van heldere hemel bij de huidige zonshoogte. Zakt de straling bij bewolkt weer
     onder de drempel terwijl de zon nog in het venster staat, dan wordt er
     niet geforceerd open gegaan - de zonwering blijft dan gewoon staan.
     Per gevel is instelbaar of hij op regen reageert: staat dat uit, dan
@@ -65,19 +66,22 @@ blueprint:
         entity:
           domain: sensor
 
-    radiation_threshold:
-      name: "☁️ Stralingsdrempel bij bewolkt"
+    sun_strength_threshold:
+      name: "☁️ Zonkracht-drempel bij bewolkt"
       description: >
-        Bij weather-status 'cloudy' toch sluiten als de straling boven deze
-        waarde komt. Bij 'partlycloudy' of 'sunny' wordt altijd gesloten
-        (mits zonvenster klopt), ongeacht straling.
-      default: 500
+        Bij weather-status 'cloudy' toch sluiten als de gemeten straling boven
+        dit percentage ligt van wat er bij heldere hemel op de huidige
+        zonshoogte mogelijk is. Daardoor werkt de drempel het hele jaar gelijk:
+        een lage najaarszon geeft minder W/m², maar telt naar verhouding even
+        zwaar. Bij 'partlycloudy' of 'sunny' wordt altijd gesloten (mits
+        zonvenster klopt), ongeacht straling.
+      default: 30
       selector:
         number:
-          min: 250
-          max: 1000
-          step: 10
-          unit_of_measurement: "W/m²"
+          min: 10
+          max: 100
+          step: 5
+          unit_of_measurement: "%"
           mode: slider
 
     heat_avg_temp_entity:
@@ -415,6 +419,8 @@ max_exceeded: silent
 trigger_variables:
   tv_azimuth_entity: !input azimuth_entity
   tv_elevation_entity: !input elevation_entity
+  tv_radiation_entity: !input radiation_entity
+  tv_sun_strength_threshold: !input sun_strength_threshold
   tv_a_azimuth: !input facade_a_azimuth
   tv_a_sun_window: !input facade_a_sun_window
   tv_a_min_elevation: !input facade_a_min_elevation
@@ -441,16 +447,26 @@ trigger:
     entity_id: !input weather_entity
     to: ~
     id: weather
-  - platform: numeric_state
-    entity_id: !input radiation_entity
-    above: !input radiation_threshold
-    for: "00:05:00"
+  # Zonkracht gaat over de drempel. Moet exact dezelfde berekening zijn als
+  # v_sun_strength en de vergelijking in v_weather_ok.
+  - platform: template
     id: radiation
-  - platform: numeric_state
-    entity_id: !input radiation_entity
-    below: !input radiation_threshold
     for: "00:05:00"
+    value_template: >
+      {% set h = states(tv_elevation_entity) | float(-90) %}
+      {% set s = sin(h * pi / 180) %}
+      {% set clear = 1098 * s * e ** (-0.057 / s) if h > 5 else 0 %}
+      {% set pct = 100 * (states(tv_radiation_entity) | float(0)) / clear if clear > 0 else 0 %}
+      {{ pct >= tv_sun_strength_threshold | float }}
+  - platform: template
     id: radiation
+    for: "00:05:00"
+    value_template: >
+      {% set h = states(tv_elevation_entity) | float(-90) %}
+      {% set s = sin(h * pi / 180) %}
+      {% set clear = 1098 * s * e ** (-0.057 / s) if h > 5 else 0 %}
+      {% set pct = 100 * (states(tv_radiation_entity) | float(0)) / clear if clear > 0 else 0 %}
+      {{ pct < tv_sun_strength_threshold | float }}
   - platform: numeric_state
     entity_id: !input heat_avg_temp_entity
     below: !input heat_threshold
@@ -568,7 +584,7 @@ variables:
   rain_entity: !input rain_entity
   weather_entity: !input weather_entity
   radiation_entity: !input radiation_entity
-  radiation_threshold: !input radiation_threshold
+  sun_strength_threshold: !input sun_strength_threshold
   azimuth_entity: !input azimuth_entity
   elevation_entity: !input elevation_entity
   heat_avg_temp_entity: !input heat_avg_temp_entity
@@ -605,11 +621,20 @@ variables:
   v_outdoor_avg: "{{ states(heat_avg_temp_entity) | float(99) }}"
   v_heat_needed: "{{ v_outdoor_avg | float(99) < heat_threshold | float }}"
 
+  # Heldere-hemelstraling op een horizontaal vlak bij de huidige zonshoogte
+  # (Haurwitz); gemeten straling als percentage daarvan is seizoensonafhankelijk.
+  v_clear_sky_radiation: >
+    {% set h = states(elevation_entity) | float(-90) %}
+    {% set s = sin(h * pi / 180) %}
+    {{ 1098 * s * e ** (-0.057 / s) if h > 5 else 0 }}
+  v_sun_strength: >
+    {% set clear = v_clear_sky_radiation | float(0) %}
+    {{ 100 * (states(radiation_entity) | float(0)) / clear if clear > 0 else 0 }}
+
   v_weather_ok: >
     {% set w = states(weather_entity) %}
-    {% set rad = states(radiation_entity) | float(0) %}
     {{ w in ['sunny', 'clear-night', 'partlycloudy']
-       or (w == 'cloudy' and rad >= radiation_threshold | float) }}
+       or (w == 'cloudy' and v_sun_strength | float(0) >= sun_strength_threshold | float) }}
 
   # Verhouding tussen de halve zonneboog (zuid -> zonsondergang) op de langste
   # dag en vandaag; > 1 buiten de zomer. Declinatie benaderd uit de dag van het jaar.
@@ -666,7 +691,7 @@ variables:
        if v_facade_a_force_close | bool and v_facade_a_can_close | bool
        else 'zon in venster + weer geschikt -> zou dicht moeten, maar richting staat op alleen openen'
        if v_facade_a_force_close | bool
-       else 'zon in venster, te bewolkt/straling onder drempel -> ongewijzigd' }}
+       else 'zon in venster, bewolkt en zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '% -> ongewijzigd' }}
 
   v_facade_a_override_active: >
     {% set ns = namespace(active=false) %}
@@ -738,7 +763,7 @@ variables:
        if v_facade_b_force_close | bool and v_facade_b_can_close | bool
        else 'zon in venster + weer geschikt -> zou dicht moeten, maar richting staat op alleen openen'
        if v_facade_b_force_close | bool
-       else 'zon in venster, te bewolkt/straling onder drempel -> ongewijzigd' }}
+       else 'zon in venster, bewolkt en zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '% -> ongewijzigd' }}
 
   v_facade_b_override_active: >
     {% set ns = namespace(active=false) %}
