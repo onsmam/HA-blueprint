@@ -35,6 +35,14 @@ blueprint:
 
     radiation_entity:
       name: "☀️ Stralingssensor (W/m²)"
+      description: >
+        Sensor die de zoninstraling buiten meet in W/m², zoals de 'straling' of
+        'solar radiation' van een weerstation (bijvoorbeeld een Tempest). Dit is
+        de hoeveelheid zonne-energie die op een horizontaal vlak valt: bij volle
+        zon in de zomer rond 800-900 W/m², bij zware bewolking enkele tientallen.
+        Geen lux-sensor en geen zonnepaneel-opbrengst gebruiken. De automation
+        vergelijkt deze waarde met de heldere-hemelstraling op de huidige
+        zonshoogte (zie Zonkracht-drempel).
       selector:
         entity:
           domain: sensor
@@ -63,10 +71,14 @@ blueprint:
     sun_strength_threshold:
       name: "☀️ Zonkracht-drempel"
       description: >
-        Sluiten als de gemeten straling boven dit percentage ligt van wat er
-        bij heldere hemel op de huidige zonshoogte mogelijk is. Daardoor werkt
-        de drempel het hele jaar gelijk: een lage najaarszon geeft minder W/m²,
-        maar telt naar verhouding even zwaar.
+        Zonkracht is de gemeten straling als percentage van wat er bij een
+        onbewolkte hemel op de huidige zonshoogte maximaal mogelijk is. 100% is
+        volle zon, rond 20% is grijs weer. Voorbeeld: begin oktober om 13:00 is
+        bij heldere hemel ~550 W/m² mogelijk; meet de sensor 275 W/m², dan is de
+        zonkracht 50%. Zo telt een lage najaarszon even zwaar als een hoge
+        zomerzon. De zonwering sluit als de zonkracht boven deze drempel ligt
+        (en de zon in het zonvenster staat). De actuele zonkracht staat in de
+        trace als v_sun_strength.
       default: 50
       selector:
         number:
