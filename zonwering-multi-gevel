@@ -193,17 +193,41 @@ blueprint:
               filter:
                 - domain: sensor
         facade_a_lux_threshold:
-          name: "Luxdrempel binnen - gevel A"
+          name: "Luxdrempel binnen (vaste waarde) - gevel A"
           description: >
-            Onder deze lichtsterkte is het binnen te donker. Neem dezelfde waarde
-            als waarop je lampen aangaan, of iets hoger zodat de zonwering
-            omhoog gaat voordat het licht aan moet.
+            Onder deze lichtsterkte is het binnen te donker. Wordt alleen
+            gebruikt als hieronder geen drempel-entiteit is ingevuld.
           default: 100
           selector:
             number:
               min: 0
               max: 2000
               step: 5
+              unit_of_measurement: "lx"
+              mode: box
+        facade_a_lux_threshold_entity:
+          name: "Luxdrempel binnen uit entiteit - gevel A"
+          description: >
+            Entiteit met de luxdrempel, bijvoorbeeld de input_number waarop je
+            lampen aangaan. De drempel wordt dan deze waarde plus de offset
+            hieronder. Leeg laten om de vaste waarde te gebruiken.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: [input_number, number, sensor]
+        facade_a_lux_offset:
+          name: "Offset op luxdrempel-entiteit - gevel A"
+          description: >
+            Wordt opgeteld bij de waarde van de drempel-entiteit. Positief: de
+            zonwering gaat al omhoog voordat de lampen aangaan.
+          default: 0
+          selector:
+            number:
+              min: -500
+              max: 500
+              step: 1
               unit_of_measurement: "lx"
               mode: box
         facade_a_react_to_rain:
@@ -372,17 +396,41 @@ blueprint:
               filter:
                 - domain: sensor
         facade_b_lux_threshold:
-          name: "Luxdrempel binnen - gevel B"
+          name: "Luxdrempel binnen (vaste waarde) - gevel B"
           description: >
-            Onder deze lichtsterkte is het binnen te donker. Neem dezelfde waarde
-            als waarop je lampen aangaan, of iets hoger zodat de zonwering
-            omhoog gaat voordat het licht aan moet.
+            Onder deze lichtsterkte is het binnen te donker. Wordt alleen
+            gebruikt als hieronder geen drempel-entiteit is ingevuld.
           default: 100
           selector:
             number:
               min: 0
               max: 2000
               step: 5
+              unit_of_measurement: "lx"
+              mode: box
+        facade_b_lux_threshold_entity:
+          name: "Luxdrempel binnen uit entiteit - gevel B"
+          description: >
+            Entiteit met de luxdrempel, bijvoorbeeld de input_number waarop je
+            lampen aangaan. De drempel wordt dan deze waarde plus de offset
+            hieronder. Leeg laten om de vaste waarde te gebruiken.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: [input_number, number, sensor]
+        facade_b_lux_offset:
+          name: "Offset op luxdrempel-entiteit - gevel B"
+          description: >
+            Wordt opgeteld bij de waarde van de drempel-entiteit. Positief: de
+            zonwering gaat al omhoog voordat de lampen aangaan.
+          default: 0
+          selector:
+            number:
+              min: -500
+              max: 500
+              step: 1
               unit_of_measurement: "lx"
               mode: box
         facade_b_react_to_rain:
@@ -541,6 +589,8 @@ trigger_variables:
   tv_a_covers: !input facade_a_covers
   tv_a_lux: !input facade_a_lux_entities
   tv_a_lux_threshold: !input facade_a_lux_threshold
+  tv_a_lux_threshold_entity: !input facade_a_lux_threshold_entity
+  tv_a_lux_offset: !input facade_a_lux_offset
   tv_a_cooldown_minutes: !input facade_a_cooldown_minutes
   tv_b_azimuth: !input facade_b_azimuth
   tv_b_sun_window: !input facade_b_sun_window
@@ -550,6 +600,8 @@ trigger_variables:
   tv_b_covers: !input facade_b_covers
   tv_b_lux: !input facade_b_lux_entities
   tv_b_lux_threshold: !input facade_b_lux_threshold
+  tv_b_lux_threshold_entity: !input facade_b_lux_threshold_entity
+  tv_b_lux_offset: !input facade_b_lux_offset
   tv_b_cooldown_minutes: !input facade_b_cooldown_minutes
 
 # Alleen triggeren op momenten waarop er iets kan veranderen; elke run levert
@@ -709,13 +761,17 @@ trigger:
     for: "00:02:00"
     value_template: >
       {% set l = states(tv_a_lux | first) if tv_a_lux | count > 0 else 'none' %}
-      {{ is_number(l) and l | float < tv_a_lux_threshold | float }}
+      {% set te = states(tv_a_lux_threshold_entity | first) if tv_a_lux_threshold_entity | count > 0 else 'none' %}
+      {% set thr = te | float + tv_a_lux_offset | float(0) if is_number(te) else tv_a_lux_threshold | float %}
+      {{ is_number(l) and l | float < thr }}
   - platform: template
     id: lux_b
     for: "00:02:00"
     value_template: >
       {% set l = states(tv_b_lux | first) if tv_b_lux | count > 0 else 'none' %}
-      {{ is_number(l) and l | float < tv_b_lux_threshold | float }}
+      {% set te = states(tv_b_lux_threshold_entity | first) if tv_b_lux_threshold_entity | count > 0 else 'none' %}
+      {% set thr = te | float + tv_b_lux_offset | float(0) if is_number(te) else tv_b_lux_threshold | float %}
+      {{ is_number(l) and l | float < thr }}
 
   - platform: homeassistant
     event: start
@@ -736,6 +792,8 @@ variables:
   facade_a_heat_mode: !input facade_a_heat_mode
   facade_a_lux_entities: !input facade_a_lux_entities
   facade_a_lux_threshold: !input facade_a_lux_threshold
+  facade_a_lux_threshold_entity: !input facade_a_lux_threshold_entity
+  facade_a_lux_offset: !input facade_a_lux_offset
   facade_a_react_to_rain: !input facade_a_react_to_rain
   facade_a_covers: !input facade_a_covers
   facade_a_azimuth: !input facade_a_azimuth
@@ -751,6 +809,8 @@ variables:
   facade_b_heat_mode: !input facade_b_heat_mode
   facade_b_lux_entities: !input facade_b_lux_entities
   facade_b_lux_threshold: !input facade_b_lux_threshold
+  facade_b_lux_threshold_entity: !input facade_b_lux_threshold_entity
+  facade_b_lux_offset: !input facade_b_lux_offset
   facade_b_react_to_rain: !input facade_b_react_to_rain
   facade_b_covers: !input facade_b_covers
   facade_b_azimuth: !input facade_b_azimuth
@@ -828,8 +888,11 @@ variables:
   v_facade_a_lux: >
     {% set l = states(facade_a_lux_entities | first) if facade_a_lux_entities | count > 0 else 'none' %}
     {{ l | float if is_number(l) else 'none' }}
+  v_facade_a_lux_limit: >
+    {% set te = states(facade_a_lux_threshold_entity | first) if facade_a_lux_threshold_entity | count > 0 else 'none' %}
+    {{ te | float + facade_a_lux_offset | float(0) if is_number(te) else facade_a_lux_threshold | float }}
   v_facade_a_dark: >
-    {{ is_number(v_facade_a_lux) and v_facade_a_lux | float < facade_a_lux_threshold | float
+    {{ is_number(v_facade_a_lux) and v_facade_a_lux | float < v_facade_a_lux_limit | float
        and v_facade_a_in_window | bool and not v_sun_strong | bool }}
   v_facade_a_force_close: >
     {{ (not v_facade_a_rain_active | bool) and (not v_facade_a_heat_active | bool)
@@ -844,7 +907,7 @@ variables:
   v_facade_a_reason: >
     {% set why = 'regen' if v_facade_a_rain_active | bool
        else v_heat_reason if v_facade_a_heat_active | bool
-       else ('te donker binnen (' ~ (v_facade_a_lux | float(0) | round(0) | int) ~ ' lx < ' ~ facade_a_lux_threshold ~ ' lx, zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '%)') if v_facade_a_dark | bool
+       else ('te donker binnen (' ~ (v_facade_a_lux | float(0) | round(0) | int) ~ ' lx < ' ~ (v_facade_a_lux_limit | float(0) | round(0) | int) ~ ' lx, zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '%)') if v_facade_a_dark | bool
        else 'zon buiten zonvenster' %}
     {{ why ~ ' -> open'
        if v_facade_a_force_open | bool and v_facade_a_can_open | bool
@@ -907,8 +970,11 @@ variables:
   v_facade_b_lux: >
     {% set l = states(facade_b_lux_entities | first) if facade_b_lux_entities | count > 0 else 'none' %}
     {{ l | float if is_number(l) else 'none' }}
+  v_facade_b_lux_limit: >
+    {% set te = states(facade_b_lux_threshold_entity | first) if facade_b_lux_threshold_entity | count > 0 else 'none' %}
+    {{ te | float + facade_b_lux_offset | float(0) if is_number(te) else facade_b_lux_threshold | float }}
   v_facade_b_dark: >
-    {{ is_number(v_facade_b_lux) and v_facade_b_lux | float < facade_b_lux_threshold | float
+    {{ is_number(v_facade_b_lux) and v_facade_b_lux | float < v_facade_b_lux_limit | float
        and v_facade_b_in_window | bool and not v_sun_strong | bool }}
   v_facade_b_force_close: >
     {{ (not v_facade_b_rain_active | bool) and (not v_facade_b_heat_active | bool)
@@ -923,7 +989,7 @@ variables:
   v_facade_b_reason: >
     {% set why = 'regen' if v_facade_b_rain_active | bool
        else v_heat_reason if v_facade_b_heat_active | bool
-       else ('te donker binnen (' ~ (v_facade_b_lux | float(0) | round(0) | int) ~ ' lx < ' ~ facade_b_lux_threshold ~ ' lx, zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '%)') if v_facade_b_dark | bool
+       else ('te donker binnen (' ~ (v_facade_b_lux | float(0) | round(0) | int) ~ ' lx < ' ~ (v_facade_b_lux_limit | float(0) | round(0) | int) ~ ' lx, zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '%)') if v_facade_b_dark | bool
        else 'zon buiten zonvenster' %}
     {{ why ~ ' -> open'
        if v_facade_b_force_open | bool and v_facade_b_can_open | bool
