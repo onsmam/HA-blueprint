@@ -178,6 +178,20 @@ blueprint:
           default: true
           selector:
             boolean: {}
+        facade_a_lights:
+          name: "Lampen - gevel A"
+          description: >
+            Lampen in de ruimte achter deze gevel. Gaat er een aan terwijl de
+            zon in het zonvenster staat maar de zonkracht onder de drempel ligt
+            (bewolkt), dan is het binnen te donker en gaat de zonwering open.
+            Komt de zon terug boven de drempel, dan sluit hij weer. Leeg laten
+            om dit uit te schakelen.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: [light, switch]
         facade_a_react_to_rain:
           name: "Bedienen bij regen - gevel A"
           description: >
@@ -329,6 +343,20 @@ blueprint:
           default: true
           selector:
             boolean: {}
+        facade_b_lights:
+          name: "Lampen - gevel B"
+          description: >
+            Lampen in de ruimte achter deze gevel. Gaat er een aan terwijl de
+            zon in het zonvenster staat maar de zonkracht onder de drempel ligt
+            (bewolkt), dan is het binnen te donker en gaat de zonwering open.
+            Komt de zon terug boven de drempel, dan sluit hij weer. Leeg laten
+            om dit uit te schakelen.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: [light, switch]
         facade_b_react_to_rain:
           name: "Bedienen bij regen - gevel B"
           description: >
@@ -483,6 +511,7 @@ trigger_variables:
   tv_a_season_correction: !input facade_a_season_correction
   tv_a_season_strength: !input facade_a_season_strength
   tv_a_covers: !input facade_a_covers
+  tv_a_lights: !input facade_a_lights
   tv_a_cooldown_minutes: !input facade_a_cooldown_minutes
   tv_b_azimuth: !input facade_b_azimuth
   tv_b_sun_window: !input facade_b_sun_window
@@ -490,6 +519,7 @@ trigger_variables:
   tv_b_season_correction: !input facade_b_season_correction
   tv_b_season_strength: !input facade_b_season_strength
   tv_b_covers: !input facade_b_covers
+  tv_b_lights: !input facade_b_lights
   tv_b_cooldown_minutes: !input facade_b_cooldown_minutes
 
 # Alleen triggeren op momenten waarop er iets kan veranderen; elke run levert
@@ -644,6 +674,13 @@ trigger:
       {% endfor %}
       {{ ns.ok and tv_b_covers | length > 0 }}
 
+  - platform: template
+    id: lights_a
+    value_template: "{{ tv_a_lights | select('is_state', 'on') | list | count > 0 }}"
+  - platform: template
+    id: lights_b
+    value_template: "{{ tv_b_lights | select('is_state', 'on') | list | count > 0 }}"
+
   - platform: homeassistant
     event: start
     id: ha_start
@@ -661,6 +698,7 @@ variables:
   indoor_avg_threshold: !input indoor_avg_threshold
 
   facade_a_heat_mode: !input facade_a_heat_mode
+  facade_a_lights: !input facade_a_lights
   facade_a_react_to_rain: !input facade_a_react_to_rain
   facade_a_covers: !input facade_a_covers
   facade_a_azimuth: !input facade_a_azimuth
@@ -674,6 +712,7 @@ variables:
   facade_a_open_position: !input facade_a_open_position
 
   facade_b_heat_mode: !input facade_b_heat_mode
+  facade_b_lights: !input facade_b_lights
   facade_b_react_to_rain: !input facade_b_react_to_rain
   facade_b_covers: !input facade_b_covers
   facade_b_azimuth: !input facade_b_azimuth
@@ -748,12 +787,15 @@ variables:
 
   v_facade_a_rain_active: "{{ v_raining | bool and facade_a_react_to_rain | bool }}"
   v_facade_a_heat_active: "{{ v_heat_needed | bool and facade_a_heat_mode | bool }}"
+  v_facade_a_lights_on: "{{ facade_a_lights | select('is_state', 'on') | list | count > 0 }}"
+  v_facade_a_dark: >
+    {{ v_facade_a_lights_on | bool and v_facade_a_in_window | bool and not v_sun_strong | bool }}
   v_facade_a_force_close: >
     {{ (not v_facade_a_rain_active | bool) and (not v_facade_a_heat_active | bool)
        and v_facade_a_in_window | bool and v_sun_strong | bool }}
   v_facade_a_force_open: >
     {{ v_facade_a_rain_active | bool or v_facade_a_heat_active | bool
-       or not (v_facade_a_in_window | bool) }}
+       or v_facade_a_dark | bool or not (v_facade_a_in_window | bool) }}
   v_facade_a_action_close: "{{ v_facade_a_force_close | bool and v_facade_a_can_close | bool }}"
   v_facade_a_action_open: "{{ v_facade_a_force_open | bool and v_facade_a_can_open | bool }}"
   v_facade_a_target: "{{ facade_a_closed_position | int if v_facade_a_action_close | bool else facade_a_open_position | int }}"
@@ -761,6 +803,7 @@ variables:
   v_facade_a_reason: >
     {% set why = 'regen' if v_facade_a_rain_active | bool
        else v_heat_reason if v_facade_a_heat_active | bool
+       else ('te donker binnen (lamp aan, zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '%)') if v_facade_a_dark | bool
        else 'zon buiten zonvenster' %}
     {{ why ~ ' -> open'
        if v_facade_a_force_open | bool and v_facade_a_can_open | bool
@@ -820,12 +863,15 @@ variables:
 
   v_facade_b_rain_active: "{{ v_raining | bool and facade_b_react_to_rain | bool }}"
   v_facade_b_heat_active: "{{ v_heat_needed | bool and facade_b_heat_mode | bool }}"
+  v_facade_b_lights_on: "{{ facade_b_lights | select('is_state', 'on') | list | count > 0 }}"
+  v_facade_b_dark: >
+    {{ v_facade_b_lights_on | bool and v_facade_b_in_window | bool and not v_sun_strong | bool }}
   v_facade_b_force_close: >
     {{ (not v_facade_b_rain_active | bool) and (not v_facade_b_heat_active | bool)
        and v_facade_b_in_window | bool and v_sun_strong | bool }}
   v_facade_b_force_open: >
     {{ v_facade_b_rain_active | bool or v_facade_b_heat_active | bool
-       or not (v_facade_b_in_window | bool) }}
+       or v_facade_b_dark | bool or not (v_facade_b_in_window | bool) }}
   v_facade_b_action_close: "{{ v_facade_b_force_close | bool and v_facade_b_can_close | bool }}"
   v_facade_b_action_open: "{{ v_facade_b_force_open | bool and v_facade_b_can_open | bool }}"
   v_facade_b_target: "{{ facade_b_closed_position | int if v_facade_b_action_close | bool else facade_b_open_position | int }}"
@@ -833,6 +879,7 @@ variables:
   v_facade_b_reason: >
     {% set why = 'regen' if v_facade_b_rain_active | bool
        else v_heat_reason if v_facade_b_heat_active | bool
+       else ('te donker binnen (lamp aan, zonkracht ' ~ (v_sun_strength | float(0) | round(0) | int) ~ '% < ' ~ sun_strength_threshold ~ '%)') if v_facade_b_dark | bool
        else 'zon buiten zonvenster' %}
     {{ why ~ ' -> open'
        if v_facade_b_force_open | bool and v_facade_b_can_open | bool
@@ -908,10 +955,10 @@ action:
                 alias: "Richting staat sluiten toe - gevel A"
                 value_template: "{{ v_facade_a_can_close | bool }}"
           - condition: and
-            alias: "Forceer open - gevel A (regen, warmtemodus of buiten zonvenster, richting staat openen toe)"
+            alias: "Forceer open - gevel A (regen, warmtemodus, te donker of buiten zonvenster, richting staat openen toe)"
             conditions:
               - condition: or
-                alias: "Regen actief, warmtemodus of zon buiten zonvenster - gevel A"
+                alias: "Regen actief, warmtemodus, te donker of zon buiten zonvenster - gevel A"
                 conditions:
                   - condition: template
                     alias: "Regen actief - gevel A"
@@ -919,6 +966,9 @@ action:
                   - condition: template
                     alias: "Warmtemodus: warmte nodig, zon binnenhalen - gevel A"
                     value_template: "{{ v_facade_a_heat_active | bool }}"
+                  - condition: template
+                    alias: "Te donker: lamp aan, zon in venster en zonkracht onder drempel - gevel A"
+                    value_template: "{{ v_facade_a_dark | bool }}"
                   - condition: template
                     alias: "Zon buiten zonvenster - gevel A"
                     value_template: "{{ not (v_facade_a_in_window | bool) }}"
@@ -971,10 +1021,10 @@ action:
                 alias: "Richting staat sluiten toe - gevel B"
                 value_template: "{{ v_facade_b_can_close | bool }}"
           - condition: and
-            alias: "Forceer open - gevel B (regen, warmtemodus of buiten zonvenster, richting staat openen toe)"
+            alias: "Forceer open - gevel B (regen, warmtemodus, te donker of buiten zonvenster, richting staat openen toe)"
             conditions:
               - condition: or
-                alias: "Regen actief, warmtemodus of zon buiten zonvenster - gevel B"
+                alias: "Regen actief, warmtemodus, te donker of zon buiten zonvenster - gevel B"
                 conditions:
                   - condition: template
                     alias: "Regen actief - gevel B"
@@ -982,6 +1032,9 @@ action:
                   - condition: template
                     alias: "Warmtemodus: warmte nodig, zon binnenhalen - gevel B"
                     value_template: "{{ v_facade_b_heat_active | bool }}"
+                  - condition: template
+                    alias: "Te donker: lamp aan, zon in venster en zonkracht onder drempel - gevel B"
+                    value_template: "{{ v_facade_b_dark | bool }}"
                   - condition: template
                     alias: "Zon buiten zonvenster - gevel B"
                     value_template: "{{ not (v_facade_b_in_window | bool) }}"
