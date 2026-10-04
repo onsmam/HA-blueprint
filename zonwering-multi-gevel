@@ -18,7 +18,9 @@ blueprint:
     de zomer afgesteld; een seizoenscorrectie laat de venstergrens daarna
     meeschuiven met de kortere zonneboog in voor- en najaar. In de warmtemodus
     (24-uursgemiddelde buitentemperatuur onder de stookgrens) sluit een gevel
-    niet voor de zon, zodat de zonnewarmte de warmtepomp ontlast. Cooldown per gevel
+    niet voor de zon, zodat de zonnewarmte de warmtepomp ontlast. Is de
+    verwarming vrijgegeven, dan staat de warmtemodus altijd aan; in voor- en
+    naseizoen alleen als het binnen ook nog niet warm genoeg is. Cooldown per gevel
     voorkomt pendelen. Handmatige
     bediening blokkeert alleen de betreffende gevel voor de rest van de dag
     - gedetecteerd via context.user_id + last_updated, dus geen extra
@@ -112,6 +114,53 @@ blueprint:
           min: 5
           max: 20
           step: 0.5
+          unit_of_measurement: "°C"
+          mode: slider
+
+    heating_enabled_entities:
+      name: "🔥 Verwarming vrijgegeven"
+      description: >
+        Schakelaar die aangeeft dat de verwarming vrijgegeven is (stookseizoen),
+        bijvoorbeeld de verwarmingsschakelaar van de warmtepomp. Staat deze aan,
+        dan staat de warmtemodus altijd aan, ongeacht buiten- of
+        binnentemperatuur. Zet deze schakelaar buiten het stookseizoen uit,
+        anders sluiten de screens nooit meer voor de zon. Leeg laten: alleen
+        de temperatuurregels hieronder gelden.
+      default:
+        - switch.luxtronik_281211_0164_heating
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: [switch, input_boolean, binary_sensor]
+
+    indoor_avg_entities:
+      name: "🌡️ Gemiddelde binnentemperatuur (24 uur)"
+      description: >
+        Voor voor- en naseizoen (verwarming nog niet vrijgegeven): de
+        warmtemodus gaat alleen aan als het buiten onder de stookgrens is en
+        ook het 24-uursgemiddelde binnen onder de drempel hieronder ligt. Zo
+        blijft de zon buiten als het huis al warm genoeg is. Maak deze sensor
+        met een Statistiek-helper (kenmerk gemiddelde, maximale ouderdom 24
+        uur). Leeg laten: alleen de buitentemperatuur telt.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: sensor
+
+    indoor_avg_threshold:
+      name: "🌡️ Drempel gemiddelde binnentemperatuur"
+      description: >
+        Warmtemodus in voor- en naseizoen alleen als het 24-uursgemiddelde
+        binnen onder deze waarde ligt.
+      default: 22
+      selector:
+        number:
+          min: 18
+          max: 25
+          step: 0.1
           unit_of_measurement: "°C"
           mode: slider
 
@@ -425,6 +474,9 @@ trigger_variables:
   tv_elevation_entity: !input elevation_entity
   tv_radiation_entity: !input radiation_entity
   tv_sun_strength_threshold: !input sun_strength_threshold
+  tv_heating_enabled: !input heating_enabled_entities
+  tv_indoor_avg: !input indoor_avg_entities
+  tv_indoor_avg_threshold: !input indoor_avg_threshold
   tv_a_azimuth: !input facade_a_azimuth
   tv_a_sun_window: !input facade_a_sun_window
   tv_a_min_elevation: !input facade_a_min_elevation
@@ -475,6 +527,22 @@ trigger:
     entity_id: !input heat_avg_temp_entity
     above: !input heat_threshold
     id: heat
+  - platform: template
+    id: heat
+    value_template: "{{ tv_heating_enabled | select('is_state', 'on') | list | count > 0 }}"
+  - platform: template
+    id: heat
+    value_template: "{{ tv_heating_enabled | select('is_state', 'on') | list | count == 0 }}"
+  - platform: template
+    id: heat
+    value_template: >
+      {% set t = states(tv_indoor_avg | first) if tv_indoor_avg | count > 0 else 'none' %}
+      {{ is_number(t) and t | float < tv_indoor_avg_threshold | float }}
+  - platform: template
+    id: heat
+    value_template: >
+      {% set t = states(tv_indoor_avg | first) if tv_indoor_avg | count > 0 else 'none' %}
+      {{ is_number(t) and t | float >= tv_indoor_avg_threshold | float }}
 
   # Zon komt in / gaat uit het zonvenster. Moet exact dezelfde berekening zijn
   # als v_sun_arc_ratio, v_facade_x_azimuth_eff en v_facade_x_in_window.
@@ -588,6 +656,9 @@ variables:
   elevation_entity: !input elevation_entity
   heat_avg_temp_entity: !input heat_avg_temp_entity
   heat_threshold: !input heat_threshold
+  heating_enabled_entities: !input heating_enabled_entities
+  indoor_avg_entities: !input indoor_avg_entities
+  indoor_avg_threshold: !input indoor_avg_threshold
 
   facade_a_heat_mode: !input facade_a_heat_mode
   facade_a_react_to_rain: !input facade_a_react_to_rain
@@ -618,7 +689,19 @@ variables:
   v_raining: "{{ is_state(rain_entity, 'on') }}"
 
   v_outdoor_avg: "{{ states(heat_avg_temp_entity) | float(99) }}"
-  v_heat_needed: "{{ v_outdoor_avg | float(99) < heat_threshold | float }}"
+  v_heating_enabled: "{{ heating_enabled_entities | select('is_state', 'on') | list | count > 0 }}"
+  # Geen of onbeschikbare binnensensor: alleen de buitentemperatuur telt.
+  v_indoor_avg: >
+    {% set t = states(indoor_avg_entities | first) if indoor_avg_entities | count > 0 else 'none' %}
+    {{ t | float if is_number(t) else 'none' }}
+  v_heat_needed: >
+    {{ v_heating_enabled | bool
+       or (v_outdoor_avg | float(99) < heat_threshold | float
+           and (not is_number(v_indoor_avg) or v_indoor_avg | float < indoor_avg_threshold | float)) }}
+  v_heat_reason: >
+    {{ 'warmtemodus (verwarming vrijgegeven)' if v_heating_enabled | bool
+       else 'warmtemodus (buiten gem. ' ~ v_outdoor_avg ~ '°C < ' ~ heat_threshold ~ '°C'
+            ~ ((', binnen gem. ' ~ v_indoor_avg ~ '°C < ' ~ indoor_avg_threshold ~ '°C') if is_number(v_indoor_avg) else '') ~ ')' }}
 
   # Heldere-hemelstraling op een horizontaal vlak bij de huidige zonshoogte
   # (Haurwitz); gemeten straling als percentage daarvan is seizoensonafhankelijk.
@@ -677,7 +760,7 @@ variables:
 
   v_facade_a_reason: >
     {% set why = 'regen' if v_facade_a_rain_active | bool
-       else ('warmtemodus (buiten gem. ' ~ v_outdoor_avg ~ '°C < ' ~ heat_threshold ~ '°C)') if v_facade_a_heat_active | bool
+       else v_heat_reason if v_facade_a_heat_active | bool
        else 'zon buiten zonvenster' %}
     {{ why ~ ' -> open'
        if v_facade_a_force_open | bool and v_facade_a_can_open | bool
@@ -749,7 +832,7 @@ variables:
 
   v_facade_b_reason: >
     {% set why = 'regen' if v_facade_b_rain_active | bool
-       else ('warmtemodus (buiten gem. ' ~ v_outdoor_avg ~ '°C < ' ~ heat_threshold ~ '°C)') if v_facade_b_heat_active | bool
+       else v_heat_reason if v_facade_b_heat_active | bool
        else 'zon buiten zonvenster' %}
     {{ why ~ ' -> open'
        if v_facade_b_force_open | bool and v_facade_b_can_open | bool
