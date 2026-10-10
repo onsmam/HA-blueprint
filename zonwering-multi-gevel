@@ -128,7 +128,7 @@ blueprint:
         Binary sensor die aan staat als het huis zonder verwarming binnenkort
         onder de minimumtemperatuur zakt (bijvoorbeeld
         binary_sensor.zonnewarmte_nuttig uit het package
-        warmtevraag-voorspelling.yaml). Ingevuld vervangt deze voorspelling
+        warmtevraag_voorspelling.yaml). Ingevuld vervangt deze voorspelling
         het 24-uursgemiddelde en de stookgrens hierboven: in voor- en
         naseizoen blijven de screens dan open zodra de zonnewarmte de komende
         dagen nodig is, zodat het huis die warmte kan bufferen. De drempel voor
