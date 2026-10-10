@@ -1,4 +1,4 @@
-# Version: 1.0.0
+# Version: 1.1.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Simuleert uur voor uur hoe het huis afkoelt zonder verwarming en zonder zon,
@@ -11,7 +11,12 @@
 # Installatie: zet dit bestand in config/packages/ met in configuration.yaml
 #   homeassistant:
 #     packages: !include_dir_named packages
-# of kopieer het template:-blok naar configuration.yaml.
+# en herstart Home Assistant.
+#
+# Bijwerken: start script.warmtevraag_package_bijwerken. Dat haalt de versie van
+# de main-branch op GitHub op en herlaadt de template-entiteiten. Wijzigingen in
+# shell_command of script zelf worden pas na een herstart actief. Lokale
+# aanpassingen in dit bestand worden overschreven; pas het daarom op GitHub aan.
 #
 # Huismodel (afgeleid uit afkoelnachten met de warmtepomp uit):
 #   H     warmteverlies in kW per graad verschil binnen-buiten
@@ -107,3 +112,37 @@ template:
           {{ h <= (HORIZON + 6 if this.state == 'on' else HORIZON) }}
         attributes:
           uren_tot_warmtevraag: "{{ states('sensor.uren_tot_warmtevraag') }}"
+
+# Nieuw bestand eerst als .new downloaden en pas na een geslaagde download
+# vervangen, zodat een netwerkfout het package niet leeg achterlaat.
+shell_command:
+  warmtevraag_package_bijwerken: >-
+    curl -sSfL -o /config/packages/warmtevraag-voorspelling.yaml.new
+    https://raw.githubusercontent.com/onsmam/HA-blueprint/main/warmtevraag-voorspelling.yaml
+    && mv /config/packages/warmtevraag-voorspelling.yaml.new
+    /config/packages/warmtevraag-voorspelling.yaml
+
+script:
+  warmtevraag_package_bijwerken:
+    alias: Warmtevraag-package bijwerken van GitHub
+    icon: mdi:github
+    sequence:
+      - action: shell_command.warmtevraag_package_bijwerken
+        response_variable: download
+        continue_on_error: true
+      - if:
+          - condition: template
+            value_template: "{{ download is defined and download.returncode == 0 }}"
+        then:
+          - action: template.reload
+          - action: persistent_notification.create
+            data:
+              title: Warmtevraag-package bijgewerkt
+              message: Nieuwste versie van GitHub geladen en template-entiteiten herladen.
+        else:
+          - action: persistent_notification.create
+            data:
+              title: Warmtevraag-package niet bijgewerkt
+              message: >
+                Downloaden mislukt{{ (': ' ~ download.stderr) if download is defined and download.stderr else '' }}.
+                De huidige versie blijft actief.
