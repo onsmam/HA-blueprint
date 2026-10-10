@@ -1,4 +1,4 @@
-# Version: 1.0.0
+# Version: 1.1.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Simuleert uur voor uur hoe het huis afkoelt zonder verwarming en zonder zon,
@@ -7,6 +7,10 @@
 # dan is zonnewarmte die nu binnenkomt nuttig (buffer in vloer en muren) en
 # staat binary_sensor.zonnewarmte_nuttig aan. Die kan de warmtemodus van de
 # blueprint 'Zonwering multi-gevel' aansturen.
+#
+# Daarnaast: sensor.warmteverlies_actueel (kW die het huis nu verliest) en
+# sensor.warmtevraag_actueel (dat verlies min interne warmte: wat de
+# warmtepomp zonder zon moet leveren).
 #
 # Installatie: zet dit bestand in config/packages/ (bestandsnaam met underscore,
 # het wordt de package-naam) met in configuration.yaml
@@ -19,6 +23,9 @@
 #   P_INT interne warmte (apparaten, mensen) in kW
 #   C     warmtecapaciteit van het huis in kWh per graad
 #   T_MIN onder deze gemiddelde binnentemperatuur is verwarming nodig
+#   WTW_OFFSET  zijn alle kamerthermostaten onbeschikbaar, dan geldt de
+#         binnentemperatuur van de WTW plus deze correctie (die meet gemiddeld
+#         0,36 graad lager dan de kamers)
 # Pas deze waarden en de entiteiten hieronder aan als het model beter bekend is.
 
 template:
@@ -42,6 +49,7 @@ template:
             {% set P_INT = 0.4 %}
             {% set C = 27 %}
             {% set T_MIN = 21 %}
+            {% set WTW_OFFSET = 0.36 %}
             {% set rooms = [
                  'climate.woonkamer', 'climate.keuken', 'climate.hal',
                  'climate.badkamer', 'climate.masterbedroom', 'climate.sophie',
@@ -50,10 +58,13 @@ template:
                  | reject('none') | map('float') | list %}
             {% set fl = fc['weather.rammenas'].forecast
                  | selectattr('temperature', 'defined') | list %}
-            {% if temps | count == 0 or fl | count == 0 %}
+            {% set wtw = states('sensor.fan_modbus_actuele_temperatuur_woning') %}
+            {% set t_in = temps | sum / temps | count if temps | count > 0
+                 else (wtw | float + WTW_OFFSET if is_number(wtw) else none) %}
+            {% set bron = 'kamers' if temps | count > 0 else 'WTW' %}
+            {% if t_in is none or fl | count == 0 %}
               {{ {'ok': false} }}
             {% else %}
-              {% set t_in = temps | sum / temps | count %}
               {% set ns = namespace(t=t_in, uren=none, t24=t_in, buiten24=0) %}
               {% for f in fl %}
                 {% set ns.t = ns.t - (H * (ns.t - f.temperature | float) - P_INT) / C %}
@@ -71,6 +82,7 @@ template:
                    'uren': ns.uren if ns.uren is not none else fl | count,
                    'bereikt': ns.uren is not none,
                    'binnen_nu': t_in | round(1),
+                   'binnenbron': bron,
                    'binnen_over_24u': ns.t24 | round(1),
                    'buiten_gem_24u': buiten24 | round(1),
                    'warmtevraag_24u_kwh': ([(H * (T_MIN - buiten24) - P_INT) * 24, 0] | max) | round(1),
@@ -88,6 +100,7 @@ template:
         attributes:
           bereikt_binnen_verwachting: "{{ wv.bereikt }}"
           binnentemperatuur_nu: "{{ wv.binnen_nu }}"
+          binnentemperatuur_bron: "{{ wv.binnenbron }}"
           binnentemperatuur_over_24u: "{{ wv.binnen_over_24u }}"
           buitentemperatuur_gem_24u: "{{ wv.buiten_gem_24u }}"
           warmtevraag_24u_kwh: "{{ wv.warmtevraag_24u_kwh }}"
@@ -108,3 +121,77 @@ template:
           {{ h <= (HORIZON + 6 if this.state == 'on' else HORIZON) }}
         attributes:
           uren_tot_warmtevraag: "{{ states('sensor.uren_tot_warmtevraag') }}"
+
+  # Actueel warmteverlies en warmtevraag met hetzelfde huismodel (houd H en
+  # P_INT gelijk aan de voorspelling hierboven). Zonnewinst zit er niet in.
+  - trigger:
+      - trigger: state
+        entity_id:
+          - sensor.fan_modbus_actuele_temperatuur_buitensensor
+          - sensor.fan_modbus_actuele_temperatuur_woning
+      - trigger: state
+        entity_id: &kamers
+          - climate.woonkamer
+          - climate.keuken
+          - climate.hal
+          - climate.badkamer
+          - climate.masterbedroom
+          - climate.sophie
+          - climate.thijmen
+          - climate.studeerkamer
+          - climate.logeerkamer
+        attribute: current_temperature
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: event_template_reloaded
+    action:
+      - variables:
+          kamers: *kamers
+          wa: >
+            {% set H = 0.17 %}
+            {% set P_INT = 0.4 %}
+            {% set WTW_OFFSET = 0.36 %}
+            {% set temps = kamers | map('state_attr', 'current_temperature')
+                 | reject('none') | map('float') | list %}
+            {% set t_out = states('sensor.fan_modbus_actuele_temperatuur_buitensensor') %}
+            {% set wtw = states('sensor.fan_modbus_actuele_temperatuur_woning') %}
+            {% set t_in = temps | sum / temps | count if temps | count > 0
+                 else (wtw | float + WTW_OFFSET if is_number(wtw) else none) %}
+            {% set bron = 'kamers' if temps | count > 0 else 'WTW' %}
+            {% if t_in is none or not is_number(t_out) %}
+              {{ {'ok': false} }}
+            {% else %}
+              {% set verlies = H * (t_in - t_out | float) %}
+              {{ {
+                   'ok': true,
+                   'verlies': verlies | round(2),
+                   'vraag': ([verlies - P_INT, 0] | max) | round(2),
+                   'binnen': t_in | round(1),
+                   'binnenbron': bron,
+                   'buiten': t_out | float | round(1)
+                 } }}
+            {% endif %}
+    sensor:
+      - name: Warmteverlies actueel
+        unique_id: warmteverlies_actueel
+        unit_of_measurement: kW
+        device_class: power
+        state_class: measurement
+        icon: mdi:home-export-outline
+        availability: "{{ wa.ok }}"
+        state: "{{ wa.verlies }}"
+        attributes:
+          binnentemperatuur: "{{ wa.binnen }}"
+          binnentemperatuur_bron: "{{ wa.binnenbron }}"
+          buitentemperatuur: "{{ wa.buiten }}"
+      # Wat de warmtepomp nu moet leveren om de binnentemperatuur te houden
+      # als de zon niet schijnt: verlies min interne warmte, nooit negatief.
+      - name: Warmtevraag actueel
+        unique_id: warmtevraag_actueel
+        unit_of_measurement: kW
+        device_class: power
+        state_class: measurement
+        icon: mdi:heat-pump-outline
+        availability: "{{ wa.ok }}"
+        state: "{{ wa.vraag }}"
