@@ -8,7 +8,8 @@
 # staat binary_sensor.zonnewarmte_nuttig aan. Die kan de warmtemodus van de
 # blueprint 'Zonwering multi-gevel' aansturen.
 #
-# Installatie: zet dit bestand in config/packages/ met in configuration.yaml
+# Installatie: zet dit bestand in config/packages/ (bestandsnaam met underscore,
+# het wordt de package-naam) met in configuration.yaml
 #   homeassistant:
 #     packages: !include_dir_named packages
 # of kopieer het template:-blok naar configuration.yaml.
