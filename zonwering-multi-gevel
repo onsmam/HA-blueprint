@@ -1,4 +1,4 @@
-# Version: 1.0.0
+# Version: 1.1.0
 blueprint:
   domain: automation
   name: "☀️ Zonwering - zonstand, regen & straling (multi-gevel)"
@@ -20,7 +20,10 @@ blueprint:
     (24-uursgemiddelde buitentemperatuur onder de stookgrens) sluit een gevel
     niet voor de zon, zodat de zonnewarmte de warmtepomp ontlast. Is de
     verwarming vrijgegeven, dan staat de warmtemodus altijd aan; in voor- en
-    naseizoen alleen als het binnen ook nog niet warm genoeg is. Cooldown per gevel
+    naseizoen alleen als het binnen ook nog niet warm genoeg is. Optioneel
+    vervangt een warmtevoorspelling (verwachte afkoeling van het huis de
+    komende dagen) de stookgrens, zodat zonnewarmte gebufferd wordt als die
+    binnenkort nodig is. Cooldown per gevel
     voorkomt pendelen. Handmatige
     bediening blokkeert alleen de betreffende gevel voor de rest van de dag
     - gedetecteerd via context.user_id + last_updated, dus geen extra
@@ -108,6 +111,8 @@ blueprint:
         Onder dit 24-uursgemiddelde van de buitentemperatuur heeft het huis
         (zonder zon) warmte nodig. Gaan de screens dan dicht, dan moet de
         warmtepomp die warmte leveren; daarom blijven ze in de warmtemodus open.
+        Niet gebruikt zolang de warmtevoorspelling hieronder ingevuld en
+        beschikbaar is.
       default: 15
       selector:
         number:
@@ -116,6 +121,26 @@ blueprint:
           step: 0.5
           unit_of_measurement: "°C"
           mode: slider
+
+    heat_forecast_entities:
+      name: "🔮 Warmtevoorspelling (optioneel)"
+      description: >
+        Binary sensor die aan staat als het huis zonder verwarming binnenkort
+        onder de minimumtemperatuur zakt (bijvoorbeeld
+        binary_sensor.zonnewarmte_nuttig uit het package
+        warmtevraag-voorspelling.yaml). Ingevuld vervangt deze voorspelling
+        het 24-uursgemiddelde en de stookgrens hierboven: in voor- en
+        naseizoen blijven de screens dan open zodra de zonnewarmte de komende
+        dagen nodig is, zodat het huis die warmte kan bufferen. De drempel voor
+        de binnentemperatuur blijft gelden. Is de sensor onbeschikbaar, dan
+        valt de automation terug op de stookgrens. Leeg laten: alleen de
+        stookgrens telt.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: [binary_sensor, input_boolean]
 
     heating_enabled_entities:
       name: "🔥 Verwarming vrijgegeven"
@@ -579,6 +604,7 @@ trigger_variables:
   tv_radiation_entity: !input radiation_entity
   tv_sun_strength_threshold: !input sun_strength_threshold
   tv_heating_enabled: !input heating_enabled_entities
+  tv_heat_forecast: !input heat_forecast_entities
   tv_indoor_avg: !input indoor_avg_entities
   tv_indoor_avg_threshold: !input indoor_avg_threshold
   tv_a_azimuth: !input facade_a_azimuth
@@ -645,6 +671,12 @@ trigger:
   - platform: template
     id: heat
     value_template: "{{ tv_heating_enabled | select('is_state', 'on') | list | count == 0 }}"
+  - platform: template
+    id: heat
+    value_template: "{{ tv_heat_forecast | select('is_state', 'on') | list | count > 0 }}"
+  - platform: template
+    id: heat
+    value_template: "{{ tv_heat_forecast | select('is_state', 'off') | list | count > 0 }}"
   - platform: template
     id: heat
     value_template: >
@@ -786,6 +818,7 @@ variables:
   heat_avg_temp_entity: !input heat_avg_temp_entity
   heat_threshold: !input heat_threshold
   heating_enabled_entities: !input heating_enabled_entities
+  heat_forecast_entities: !input heat_forecast_entities
   indoor_avg_entities: !input indoor_avg_entities
   indoor_avg_threshold: !input indoor_avg_threshold
 
@@ -831,13 +864,24 @@ variables:
   v_indoor_avg: >
     {% set t = states(indoor_avg_entities | first) if indoor_avg_entities | count > 0 else 'none' %}
     {{ t | float if is_number(t) else 'none' }}
+  # 'on'/'off' van de warmtevoorspelling, 'none' als die niet ingevuld of
+  # onbeschikbaar is (dan telt de stookgrens).
+  v_heat_forecast: >
+    {% set f = states(heat_forecast_entities | first) if heat_forecast_entities | count > 0 else 'none' %}
+    {{ f if f in ['on', 'off'] else 'none' }}
+  v_heat_expected: >
+    {{ v_heat_forecast == 'on' if v_heat_forecast != 'none'
+       else v_outdoor_avg | float(99) < heat_threshold | float }}
   v_heat_needed: >
     {{ v_heating_enabled | bool
-       or (v_outdoor_avg | float(99) < heat_threshold | float
+       or (v_heat_expected | bool
            and (not is_number(v_indoor_avg) or v_indoor_avg | float < indoor_avg_threshold | float)) }}
   v_heat_reason: >
+    {% set hours = state_attr(heat_forecast_entities | first, 'uren_tot_warmtevraag') if heat_forecast_entities | count > 0 else none %}
     {{ 'warmtemodus (verwarming vrijgegeven)' if v_heating_enabled | bool
-       else 'warmtemodus (buiten gem. ' ~ v_outdoor_avg ~ '°C < ' ~ heat_threshold ~ '°C'
+       else 'warmtemodus (' ~ ('voorspelling: warmte nodig' ~ ((' over ' ~ hours ~ ' u') if is_number(hours) else '')
+                               if v_heat_forecast != 'none'
+                               else 'buiten gem. ' ~ v_outdoor_avg ~ '°C < ' ~ heat_threshold ~ '°C')
             ~ ((', binnen gem. ' ~ v_indoor_avg ~ '°C < ' ~ indoor_avg_threshold ~ '°C') if is_number(v_indoor_avg) else '') ~ ')' }}
 
   # Heldere-hemelstraling op een horizontaal vlak bij de huidige zonshoogte
