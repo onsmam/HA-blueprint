@@ -1,4 +1,4 @@
-# Version: 1.2.0
+# Version: 1.3.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Simuleert uur voor uur hoe het huis afkoelt zonder verwarming en zonder zon,
@@ -11,9 +11,8 @@
 # Daarnaast: sensor.warmteverlies_actueel (kW die het huis nu verliest) en
 # sensor.warmtevraag_actueel (dat verlies min interne warmte en gemeten
 # zonnewinst: wat de warmtepomp nu moet leveren).
-#
-# Twee automations geven de verwarming van de warmtepomp eenmaal per seizoen
-# vrij of zetten hem uit (zie onderaan).
+# sensor.binnentemperatuur_huis is het gemiddelde van de kamers; samen met
+# sensor.uren_tot_warmtevraag gebruikt door de blueprint warmtepomp-stookseizoen.
 #
 # Installatie: zet dit bestand in config/packages/ (bestandsnaam met underscore,
 # het wordt de package-naam) met in configuration.yaml
@@ -214,97 +213,12 @@ template:
           zonnewinst_kw: "{{ wa.zon }}"
           screens_open_procent: "{{ wa.screens_open }}"
           interne_warmte_kw: 0.4
-
-# Stookseizoen: de verwarming eenmaal per seizoen vrijgeven en weer uitzetten.
-# Vrijgeven (september t/m februari): het huis zakt volgens de voorspelling
-# binnen 12 uur onder T_MIN, of is (bij een onbeschikbare voorspelling) al 3 uur
-# onder T_MIN gebleven.
-# Uitzetten (maart t/m juni): zowel de afgelopen 24 uur als de verwachting voor
-# de komende 24 uur gemiddeld boven de stookgrens. Buiten die maanden wordt er
-# niet automatisch geschakeld, dus een koude week in mei zet de verwarming niet
-# opnieuw aan (en een warme dag in oktober niet uit).
-automation:
-  - id: warmtepomp_stookseizoen_aan
-    alias: "Warmtepomp: stookseizoen aan"
-    description: >
-      Geeft de verwarming in september t/m februari vrij zodra het huis volgens
-      de voorspelling binnen 12 uur onder de 21 graden zakt, of al 3 uur onder
-      de 21 graden is.
-    mode: single
-    triggers:
-      - trigger: numeric_state
-        entity_id: sensor.uren_tot_warmtevraag
-        below: 12.5
-      - trigger: template
-        value_template: "{{ state_attr('sensor.warmteverlies_actueel', 'binnentemperatuur') | float(99) < 21 }}"
-        for: "03:00:00"
-      # Een herstart breekt de 3 uur af; daarna alleen nog controleren.
-      - trigger: homeassistant
-        event: start
-    conditions:
-      - condition: template
-        alias: "September t/m februari"
-        value_template: "{{ now().month in [9, 10, 11, 12, 1, 2] }}"
-      - condition: state
-        alias: "Verwarming staat nog uit"
-        entity_id: switch.luxtronik_281211_0164_heating
-        state: "off"
-      - condition: or
-        alias: "Warmte binnen 12 uur nodig of binnen al onder 21 graden"
-        conditions:
-          - condition: numeric_state
-            alias: "Voorspelling: binnen 12 uur onder 21 graden"
-            entity_id: sensor.uren_tot_warmtevraag
-            below: 12.5
-          - condition: template
-            alias: "Binnen onder 21 graden"
-            value_template: "{{ state_attr('sensor.warmteverlies_actueel', 'binnentemperatuur') | float(99) < 21 }}"
-    actions:
-      - action: switch.turn_on
-        target:
-          entity_id: switch.luxtronik_281211_0164_heating
-      - action: persistent_notification.create
-        data:
-          title: Stookseizoen gestart
-          message: >
-            Verwarming van de warmtepomp vrijgegeven: binnen
-            {{ state_attr('sensor.warmteverlies_actueel', 'binnentemperatuur') }} graden,
-            volgens de voorspelling over {{ states('sensor.uren_tot_warmtevraag') }} uur
-            onder de 21 graden.
-
-  - id: warmtepomp_stookseizoen_uit
-    alias: "Warmtepomp: stookseizoen uit"
-    description: >
-      Zet de verwarming uit als in maart t/m juni het 24-uursgemiddelde buiten
-      en de verwachting voor de komende 24 uur boven de stookgrens liggen.
-    mode: single
-    triggers:
-      - trigger: time
-        at: "10:00:00"
-    conditions:
-      - condition: template
-        alias: "Maart t/m juni"
-        value_template: "{{ now().month in [3, 4, 5, 6] }}"
-      - condition: state
-        alias: "Verwarming staat nog aan"
-        entity_id: switch.luxtronik_281211_0164_heating
-        state: "on"
-      - condition: numeric_state
-        alias: "Afgelopen 24 uur gemiddeld boven de stookgrens"
-        entity_id: sensor.luxtronik_281211_0164_outdoor_temperature_average
-        above: 15
-      - condition: template
-        alias: "Komende 24 uur gemiddeld boven de stookgrens"
-        value_template: "{{ state_attr('sensor.uren_tot_warmtevraag', 'buitentemperatuur_gem_24u') | float(-99) > 15 }}"
-    actions:
-      - action: switch.turn_off
-        target:
-          entity_id: switch.luxtronik_281211_0164_heating
-      - action: persistent_notification.create
-        data:
-          title: Stookseizoen beëindigd
-          message: >
-            Verwarming van de warmtepomp uitgezet: buiten gemiddeld
-            {{ states('sensor.luxtronik_281211_0164_outdoor_temperature_average') }} graden,
-            verwachting komende 24 uur
-            {{ state_attr('sensor.uren_tot_warmtevraag', 'buitentemperatuur_gem_24u') }} graden.
+      - name: Binnentemperatuur huis
+        unique_id: binnentemperatuur_huis
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        availability: "{{ wa.ok }}"
+        state: "{{ wa.binnen }}"
+        attributes:
+          bron: "{{ wa.binnenbron }}"
