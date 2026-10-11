@@ -1,4 +1,4 @@
-# Version: 1.1.0
+# Version: 1.2.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Simuleert uur voor uur hoe het huis afkoelt zonder verwarming en zonder zon,
@@ -9,8 +9,11 @@
 # blueprint 'Zonwering multi-gevel' aansturen.
 #
 # Daarnaast: sensor.warmteverlies_actueel (kW die het huis nu verliest) en
-# sensor.warmtevraag_actueel (dat verlies min interne warmte: wat de
-# warmtepomp zonder zon moet leveren).
+# sensor.warmtevraag_actueel (dat verlies min interne warmte en gemeten
+# zonnewinst: wat de warmtepomp nu moet leveren).
+#
+# Twee automations geven de verwarming van de warmtepomp eenmaal per seizoen
+# vrij of zetten hem uit (zie onderaan).
 #
 # Installatie: zet dit bestand in config/packages/ (bestandsnaam met underscore,
 # het wordt de package-naam) met in configuration.yaml
@@ -23,6 +26,9 @@
 #   P_INT interne warmte (apparaten, mensen) in kW
 #   C     warmtecapaciteit van het huis in kWh per graad
 #   T_MIN onder deze gemiddelde binnentemperatuur is verwarming nodig
+#   A_ZON effectief zonoppervlak in m2: zonnewinst in kW = A_ZON x gemeten
+#         straling in kW/m2 (uit de winterfit: 3,43 kWh warmte per kWh/m2
+#         instraling; geldt met open screens)
 #   WTW_OFFSET  zijn alle kamerthermostaten onbeschikbaar, dan geldt de
 #         binnentemperatuur van de WTW plus deze correctie (die meet gemiddeld
 #         0,36 graad lager dan de kamers)
@@ -123,12 +129,13 @@ template:
           uren_tot_warmtevraag: "{{ states('sensor.uren_tot_warmtevraag') }}"
 
   # Actueel warmteverlies en warmtevraag met hetzelfde huismodel (houd H en
-  # P_INT gelijk aan de voorspelling hierboven). Zonnewinst zit er niet in.
+  # P_INT gelijk aan de voorspelling hierboven).
   - trigger:
       - trigger: state
         entity_id:
           - sensor.fan_modbus_actuele_temperatuur_buitensensor
           - sensor.fan_modbus_actuele_temperatuur_woning
+          - sensor.st_00125314_straling
       - trigger: state
         entity_id: &kamers
           - climate.woonkamer
@@ -151,6 +158,7 @@ template:
           wa: >
             {% set H = 0.17 %}
             {% set P_INT = 0.4 %}
+            {% set A_ZON = 3.43 %}
             {% set WTW_OFFSET = 0.36 %}
             {% set temps = kamers | map('state_attr', 'current_temperature')
                  | reject('none') | map('float') | list %}
@@ -163,10 +171,12 @@ template:
               {{ {'ok': false} }}
             {% else %}
               {% set verlies = H * (t_in - t_out | float) %}
+              {% set zon = A_ZON * (states('sensor.st_00125314_straling') | float(0)) / 1000 %}
               {{ {
                    'ok': true,
                    'verlies': verlies | round(2),
-                   'vraag': ([verlies - P_INT, 0] | max) | round(2),
+                   'zon': zon | round(2),
+                   'vraag': ([verlies - P_INT - zon, 0] | max) | round(2),
                    'binnen': t_in | round(1),
                    'binnenbron': bron,
                    'buiten': t_out | float | round(1)
@@ -185,8 +195,8 @@ template:
           binnentemperatuur: "{{ wa.binnen }}"
           binnentemperatuur_bron: "{{ wa.binnenbron }}"
           buitentemperatuur: "{{ wa.buiten }}"
-      # Wat de warmtepomp nu moet leveren om de binnentemperatuur te houden
-      # als de zon niet schijnt: verlies min interne warmte, nooit negatief.
+      # Wat de warmtepomp nu moet leveren om de binnentemperatuur te houden:
+      # verlies min interne warmte en zonnewinst, nooit negatief.
       - name: Warmtevraag actueel
         unique_id: warmtevraag_actueel
         unit_of_measurement: kW
@@ -195,3 +205,85 @@ template:
         icon: mdi:heat-pump-outline
         availability: "{{ wa.ok }}"
         state: "{{ wa.vraag }}"
+        attributes:
+          zonnewinst_kw: "{{ wa.zon }}"
+          interne_warmte_kw: 0.4
+
+# Stookseizoen: de verwarming eenmaal per seizoen vrijgeven en weer uitzetten.
+# Vrijgeven (september t/m februari): het huis is 3 uur onder T_MIN gebleven.
+# Uitzetten (maart t/m juni): zowel de afgelopen 24 uur als de verwachting voor
+# de komende 24 uur gemiddeld boven de stookgrens. Buiten die maanden wordt er
+# niet automatisch geschakeld, dus een koude week in mei zet de verwarming niet
+# opnieuw aan (en een warme dag in oktober niet uit).
+automation:
+  - id: warmtepomp_stookseizoen_aan
+    alias: "Warmtepomp: stookseizoen aan"
+    description: >
+      Geeft de verwarming vrij zodra het huis in september t/m februari 3 uur
+      onder de 21 graden blijft.
+    mode: single
+    triggers:
+      - trigger: template
+        value_template: "{{ state_attr('sensor.warmteverlies_actueel', 'binnentemperatuur') | float(99) < 21 }}"
+        for: "03:00:00"
+      # Een herstart breekt de 3 uur af; daarna alleen nog controleren.
+      - trigger: homeassistant
+        event: start
+    conditions:
+      - condition: template
+        alias: "September t/m februari"
+        value_template: "{{ now().month in [9, 10, 11, 12, 1, 2] }}"
+      - condition: state
+        alias: "Verwarming staat nog uit"
+        entity_id: switch.luxtronik_281211_0164_heating
+        state: "off"
+      - condition: template
+        alias: "Binnen onder 21 graden"
+        value_template: "{{ state_attr('sensor.warmteverlies_actueel', 'binnentemperatuur') | float(99) < 21 }}"
+    actions:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.luxtronik_281211_0164_heating
+      - action: persistent_notification.create
+        data:
+          title: Stookseizoen gestart
+          message: >
+            Verwarming van de warmtepomp vrijgegeven: binnen
+            {{ state_attr('sensor.warmteverlies_actueel', 'binnentemperatuur') }} graden.
+
+  - id: warmtepomp_stookseizoen_uit
+    alias: "Warmtepomp: stookseizoen uit"
+    description: >
+      Zet de verwarming uit als in maart t/m juni het 24-uursgemiddelde buiten
+      en de verwachting voor de komende 24 uur boven de stookgrens liggen.
+    mode: single
+    triggers:
+      - trigger: time
+        at: "10:00:00"
+    conditions:
+      - condition: template
+        alias: "Maart t/m juni"
+        value_template: "{{ now().month in [3, 4, 5, 6] }}"
+      - condition: state
+        alias: "Verwarming staat nog aan"
+        entity_id: switch.luxtronik_281211_0164_heating
+        state: "on"
+      - condition: numeric_state
+        alias: "Afgelopen 24 uur gemiddeld boven de stookgrens"
+        entity_id: sensor.luxtronik_281211_0164_outdoor_temperature_average
+        above: 15
+      - condition: template
+        alias: "Komende 24 uur gemiddeld boven de stookgrens"
+        value_template: "{{ state_attr('sensor.uren_tot_warmtevraag', 'buitentemperatuur_gem_24u') | float(-99) > 15 }}"
+    actions:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.luxtronik_281211_0164_heating
+      - action: persistent_notification.create
+        data:
+          title: Stookseizoen beëindigd
+          message: >
+            Verwarming van de warmtepomp uitgezet: buiten gemiddeld
+            {{ states('sensor.luxtronik_281211_0164_outdoor_temperature_average') }} graden,
+            verwachting komende 24 uur
+            {{ state_attr('sensor.uren_tot_warmtevraag', 'buitentemperatuur_gem_24u') }} graden.
