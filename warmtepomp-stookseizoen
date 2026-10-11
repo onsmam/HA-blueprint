@@ -1,0 +1,307 @@
+# Version: 1.0.0
+blueprint:
+  domain: automation
+  name: "🔥 Warmtepomp - stookseizoen aan/uit"
+  description: >
+    Geeft de verwarming van de warmtepomp eenmaal per seizoen vrij en zet hem
+    eenmaal per seizoen weer uit. Vrijgeven gebeurt in de stookmaanden zodra
+    het huis volgens de voorspelling binnenkort onder de minimumtemperatuur
+    zakt, of (als de voorspelling onbeschikbaar is) al een tijd onder de
+    minimumtemperatuur is. Uitzetten gebeurt in de voorjaarsmaanden op een vast
+    tijdstip als zowel het gemiddelde van de afgelopen 24 uur als de
+    verwachting voor de komende 24 uur boven de stookgrens liggen. Buiten die
+    maanden wordt niet geschakeld, zodat een koude week in mei of een warme dag
+    in oktober het seizoen niet omgooit. Bedoeld voor de sensoren uit het
+    package warmtevraag_voorspelling.yaml. De variabele v_reason in de trace
+    toont waarom er wel of niet geschakeld is.
+
+  input:
+    heating_switch:
+      name: "🔥 Verwarming vrijgegeven"
+      description: Schakelaar die de verwarming van de warmtepomp vrijgeeft.
+      default: switch.luxtronik_281211_0164_heating
+      selector:
+        entity:
+          filter:
+            - domain: [switch, input_boolean]
+
+    on_settings:
+      name: "Stookseizoen aan"
+      icon: mdi:radiator
+      collapsed: false
+      input:
+        hours_entity:
+          name: "Uren tot warmtevraag"
+          description: >
+            Sensor met het aantal uren tot het huis zonder verwarming onder de
+            minimumtemperatuur zakt (sensor.uren_tot_warmtevraag uit het
+            package). Het attribuut buitentemperatuur_gem_24u wordt ook
+            gebruikt voor het uitzetten.
+          default: sensor.uren_tot_warmtevraag
+          selector:
+            entity:
+              filter:
+                - domain: sensor
+        lead_hours:
+          name: "Vrijgeven als warmte nodig is binnen"
+          description: >
+            Vloerverwarming is traag; vrijgeven ruim voordat het huis te koel
+            wordt. De voorspelling rekent zonder zon, dus na een zonnige dag
+            kan dit iets vroeg zijn.
+          default: 12
+          selector:
+            number:
+              min: 1
+              max: 48
+              step: 1
+              unit_of_measurement: "h"
+              mode: slider
+        indoor_entity:
+          name: "Binnentemperatuur huis"
+          description: >
+            Gemiddelde binnentemperatuur (sensor.binnentemperatuur_huis uit het
+            package). Terugval als de voorspelling onbeschikbaar is.
+          default: sensor.binnentemperatuur_huis
+          selector:
+            entity:
+              filter:
+                - domain: sensor
+        min_temp:
+          name: "Minimumtemperatuur binnen"
+          default: 21
+          selector:
+            number:
+              min: 15
+              max: 24
+              step: 0.5
+              unit_of_measurement: "°C"
+              mode: slider
+        cold_duration:
+          name: "Terugval: zo lang onder de minimumtemperatuur"
+          default:
+            hours: 3
+            minutes: 0
+            seconds: 0
+          selector:
+            duration: {}
+        on_months:
+          name: "Maanden waarin vrijgegeven mag worden"
+          default: ["9", "10", "11", "12", "1", "2"]
+          selector:
+            select:
+              multiple: true
+              mode: dropdown
+              options:
+                - value: "1"
+                  label: januari
+                - value: "2"
+                  label: februari
+                - value: "3"
+                  label: maart
+                - value: "4"
+                  label: april
+                - value: "5"
+                  label: mei
+                - value: "6"
+                  label: juni
+                - value: "7"
+                  label: juli
+                - value: "8"
+                  label: augustus
+                - value: "9"
+                  label: september
+                - value: "10"
+                  label: oktober
+                - value: "11"
+                  label: november
+                - value: "12"
+                  label: december
+
+    off_settings:
+      name: "Stookseizoen uit"
+      icon: mdi:radiator-off
+      collapsed: false
+      input:
+        outdoor_avg_entity:
+          name: "Gemiddelde buitentemperatuur (24 uur)"
+          default: sensor.luxtronik_281211_0164_outdoor_temperature_average
+          selector:
+            entity:
+              filter:
+                - domain: sensor
+        heat_threshold:
+          name: "Stookgrens"
+          description: >
+            Uitzetten als het gemiddelde van de afgelopen 24 uur en de
+            verwachting voor de komende 24 uur allebei boven deze waarde liggen.
+          default: 15
+          selector:
+            number:
+              min: 5
+              max: 20
+              step: 0.5
+              unit_of_measurement: "°C"
+              mode: slider
+        off_time:
+          name: "Tijdstip van de dagelijkse controle"
+          default: "10:00:00"
+          selector:
+            time: {}
+        off_months:
+          name: "Maanden waarin uitgezet mag worden"
+          default: ["3", "4", "5", "6"]
+          selector:
+            select:
+              multiple: true
+              mode: dropdown
+              options:
+                - value: "1"
+                  label: januari
+                - value: "2"
+                  label: februari
+                - value: "3"
+                  label: maart
+                - value: "4"
+                  label: april
+                - value: "5"
+                  label: mei
+                - value: "6"
+                  label: juni
+                - value: "7"
+                  label: juli
+                - value: "8"
+                  label: augustus
+                - value: "9"
+                  label: september
+                - value: "10"
+                  label: oktober
+                - value: "11"
+                  label: november
+                - value: "12"
+                  label: december
+
+mode: single
+max_exceeded: silent
+
+trigger_variables:
+  tv_hours_entity: !input hours_entity
+  tv_lead_hours: !input lead_hours
+  tv_indoor_entity: !input indoor_entity
+  tv_min_temp: !input min_temp
+
+trigger:
+  - platform: template
+    id: on_forecast
+    value_template: "{{ states(tv_hours_entity) | float(999) <= tv_lead_hours | float }}"
+  - platform: template
+    id: on_cold
+    value_template: "{{ states(tv_indoor_entity) | float(99) < tv_min_temp | float }}"
+    for: !input cold_duration
+  # Een herstart breekt de wachttijd af; daarna alleen nog controleren.
+  - platform: homeassistant
+    event: start
+    id: on_start
+  - platform: time
+    at: !input off_time
+    id: off_check
+
+variables:
+  heating_switch: !input heating_switch
+  hours_entity: !input hours_entity
+  lead_hours: !input lead_hours
+  indoor_entity: !input indoor_entity
+  min_temp: !input min_temp
+  on_months: !input on_months
+  outdoor_avg_entity: !input outdoor_avg_entity
+  heat_threshold: !input heat_threshold
+  off_months: !input off_months
+
+  v_heating_on: "{{ is_state(heating_switch, 'on') }}"
+  v_month: "{{ now().month | string }}"
+  v_hours: "{{ states(hours_entity) }}"
+  v_indoor: "{{ states(indoor_entity) }}"
+  v_outdoor_avg: "{{ states(outdoor_avg_entity) }}"
+  v_forecast_avg: "{{ state_attr(hours_entity, 'buitentemperatuur_gem_24u') }}"
+
+  v_heat_soon: "{{ is_number(v_hours) and v_hours | float <= lead_hours | float }}"
+  v_too_cold: "{{ is_number(v_indoor) and v_indoor | float < min_temp | float }}"
+  v_warm_past: "{{ is_number(v_outdoor_avg) and v_outdoor_avg | float > heat_threshold | float }}"
+  v_warm_next: "{{ is_number(v_forecast_avg) and v_forecast_avg | float > heat_threshold | float }}"
+
+  v_turn_on: >
+    {{ trigger.id in ['on_forecast', 'on_cold', 'on_start']
+       and v_month in on_months and not v_heating_on | bool
+       and (v_heat_soon | bool or v_too_cold | bool) }}
+  v_turn_off: >
+    {{ trigger.id == 'off_check'
+       and v_month in off_months and v_heating_on | bool
+       and v_warm_past | bool and v_warm_next | bool }}
+
+  v_reason: >
+    {% set why_on = ('warmte nodig over ' ~ v_hours ~ ' u (<= ' ~ lead_hours ~ ' u)') if v_heat_soon | bool
+         else ('binnen ' ~ v_indoor ~ '°C < ' ~ min_temp ~ '°C') %}
+    {{ 'vrijgeven: ' ~ why_on if v_turn_on | bool
+       else 'uitzetten: buiten gem. ' ~ v_outdoor_avg ~ '°C en verwachting ' ~ v_forecast_avg ~ '°C > ' ~ heat_threshold ~ '°C'
+       if v_turn_off | bool
+       else 'niets doen: verwarming staat al aan' if trigger.id != 'off_check' and v_heating_on | bool
+       else 'niets doen: maand ' ~ v_month ~ ' valt buiten de stookmaanden' if trigger.id != 'off_check' and v_month not in on_months
+       else 'niets doen: geen warmte nodig binnen ' ~ lead_hours ~ ' u en binnen niet te koud' if trigger.id != 'off_check'
+       else 'niets doen: verwarming staat al uit' if not v_heating_on | bool
+       else 'niets doen: maand ' ~ v_month ~ ' valt buiten de voorjaarsmaanden' if v_month not in off_months
+       else 'niets doen: buiten gem. ' ~ v_outdoor_avg ~ '°C / verwachting ' ~ v_forecast_avg ~ '°C, niet beide boven ' ~ heat_threshold ~ '°C' }}
+
+action:
+  - choose:
+      - alias: "Stookseizoen aan"
+        conditions:
+          - condition: template
+            alias: "Getriggerd door voorspelling, kou of herstart"
+            value_template: "{{ trigger.id in ['on_forecast', 'on_cold', 'on_start'] }}"
+          - condition: template
+            alias: "Maand valt in de stookmaanden"
+            value_template: "{{ v_month in on_months }}"
+          - condition: template
+            alias: "Verwarming staat nog uit"
+            value_template: "{{ not v_heating_on | bool }}"
+          - condition: or
+            alias: "Warmte binnenkort nodig of binnen al te koud"
+            conditions:
+              - condition: template
+                alias: "Voorspelling: warmte nodig binnen de ingestelde uren"
+                value_template: "{{ v_heat_soon | bool }}"
+              - condition: template
+                alias: "Binnen onder de minimumtemperatuur"
+                value_template: "{{ v_too_cold | bool }}"
+        sequence:
+          - service: homeassistant.turn_on
+            target:
+              entity_id: !input heating_switch
+          - service: persistent_notification.create
+            data:
+              title: Stookseizoen gestart
+              message: "Verwarming van de warmtepomp vrijgegeven: {{ v_reason }}."
+      - alias: "Stookseizoen uit"
+        conditions:
+          - condition: template
+            alias: "Dagelijkse controle"
+            value_template: "{{ trigger.id == 'off_check' }}"
+          - condition: template
+            alias: "Maand valt in de voorjaarsmaanden"
+            value_template: "{{ v_month in off_months }}"
+          - condition: template
+            alias: "Verwarming staat nog aan"
+            value_template: "{{ v_heating_on | bool }}"
+          - condition: template
+            alias: "Afgelopen 24 uur gemiddeld boven de stookgrens"
+            value_template: "{{ v_warm_past | bool }}"
+          - condition: template
+            alias: "Komende 24 uur gemiddeld boven de stookgrens"
+            value_template: "{{ v_warm_next | bool }}"
+        sequence:
+          - service: homeassistant.turn_off
+            target:
+              entity_id: !input heating_switch
+          - service: persistent_notification.create
+            data:
+              title: Stookseizoen beëindigd
+              message: "Verwarming van de warmtepomp uitgezet: {{ v_reason }}."
