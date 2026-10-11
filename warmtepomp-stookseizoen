@@ -1,4 +1,4 @@
-# Version: 1.0.0
+# Version: 1.1.0
 blueprint:
   domain: automation
   name: "🔥 Warmtepomp - stookseizoen aan/uit"
@@ -24,6 +24,19 @@ blueprint:
         entity:
           filter:
             - domain: [switch, input_boolean]
+
+    notify_devices:
+      name: "📱 Pushbericht naar"
+      description: >
+        Telefoons (Home Assistant Companion-app) die een pushbericht krijgen
+        als de verwarming vrijgegeven of uitgezet wordt. Leeg laten: een
+        melding in Home Assistant zelf.
+      default: []
+      selector:
+        device:
+          multiple: true
+          filter:
+            - integration: mobile_app
 
     on_settings:
       name: "Stookseizoen aan"
@@ -207,6 +220,7 @@ trigger:
 
 variables:
   heating_switch: !input heating_switch
+  notify_devices: !input notify_devices
   hours_entity: !input hours_entity
   lead_hours: !input lead_hours
   indoor_entity: !input indoor_entity
@@ -276,10 +290,6 @@ action:
           - service: homeassistant.turn_on
             target:
               entity_id: !input heating_switch
-          - service: persistent_notification.create
-            data:
-              title: Stookseizoen gestart
-              message: "Verwarming van de warmtepomp vrijgegeven: {{ v_reason }}."
       - alias: "Stookseizoen uit"
         conditions:
           - condition: template
@@ -301,7 +311,33 @@ action:
           - service: homeassistant.turn_off
             target:
               entity_id: !input heating_switch
+
+  # Melding alleen als er geschakeld is.
+  - if:
+      - condition: template
+        alias: "Er is geschakeld"
+        value_template: "{{ v_turn_on | bool or v_turn_off | bool }}"
+    then:
+      - variables:
+          n_title: "{{ 'Stookseizoen gestart' if v_turn_on | bool else 'Stookseizoen beëindigd' }}"
+          n_message: >
+            Verwarming van de warmtepomp {{ 'vrijgegeven' if v_turn_on | bool else 'uitgezet' }}: {{ v_reason }}.
+      - if:
+          - condition: template
+            alias: "Telefoons gekozen voor pushbericht"
+            value_template: "{{ notify_devices | count > 0 }}"
+        then:
+          # De notify-actie van de Companion-app heet naar de apparaatnaam.
+          - repeat:
+              for_each: "{{ notify_devices }}"
+              sequence:
+                - service: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+                  continue_on_error: true
+                  data:
+                    title: "{{ n_title }}"
+                    message: "{{ n_message }}"
+        else:
           - service: persistent_notification.create
             data:
-              title: Stookseizoen beëindigd
-              message: "Verwarming van de warmtepomp uitgezet: {{ v_reason }}."
+              title: "{{ n_title }}"
+              message: "{{ n_message }}"
