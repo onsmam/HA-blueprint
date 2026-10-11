@@ -1,4 +1,4 @@
-# Version: 1.3.0
+# Version: 1.4.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Simuleert uur voor uur hoe het huis afkoelt zonder verwarming en zonder zon,
@@ -10,7 +10,7 @@
 #
 # Daarnaast: sensor.warmteverlies_actueel (kW die het huis nu verliest) en
 # sensor.warmtevraag_actueel (dat verlies min interne warmte en gemeten
-# zonnewinst: wat de warmtepomp nu moet leveren).
+# zonnewinst: wat de warmtepomp nu moet leveren; negatief = het huis warmt op).
 # sensor.binnentemperatuur_huis is het gemiddelde van de kamers; samen met
 # sensor.uren_tot_warmtevraag gebruikt door de blueprint warmtepomp-stookseizoen.
 #
@@ -180,7 +180,7 @@ template:
                    'verlies': verlies | round(2),
                    'zon': zon | round(2),
                    'screens_open': (open * 100) | round(0) | int,
-                   'vraag': ([verlies - P_INT - zon, 0] | max) | round(2),
+                   'vraag': (verlies - P_INT - zon) | round(2),
                    'binnen': t_in | round(1),
                    'binnenbron': bron,
                    'buiten': t_out | float | round(1)
@@ -200,7 +200,8 @@ template:
           binnentemperatuur_bron: "{{ wa.binnenbron }}"
           buitentemperatuur: "{{ wa.buiten }}"
       # Wat de warmtepomp nu moet leveren om de binnentemperatuur te houden:
-      # verlies min interne warmte en zonnewinst, nooit negatief.
+      # verlies min interne warmte en zonnewinst. Negatief: zon en interne
+      # warmte leveren meer dan het verlies en het huis warmt op.
       - name: Warmtevraag actueel
         unique_id: warmtevraag_actueel
         unit_of_measurement: kW
