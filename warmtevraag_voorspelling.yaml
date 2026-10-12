@@ -1,4 +1,4 @@
-# Version: 1.5.0
+# Version: 1.6.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Simuleert uur voor uur hoe het huis afkoelt zonder verwarming en zonder zon,
@@ -25,10 +25,16 @@
 #   P_INT interne warmte (apparaten, mensen) in kW
 #   C     warmtecapaciteit van het huis in kWh per graad
 #   T_MIN onder deze gemiddelde binnentemperatuur is verwarming nodig
-#   A_ZON effectief zonoppervlak in m2: zonnewinst in kW = A_ZON x gemeten
-#         straling in kW/m2 x deel dat de screens open staan. Gefit op
-#         7-12 oktober met de warmtepomp uit (11-14 m2). Geldt voor de lage
-#         herfst- en winterzon; in de zomer valt er minder op de gevel.
+#   Zonnewinst per gevel: de gemeten horizontale straling wordt gesplitst in
+#   direct en diffuus licht (Erbs) en omgerekend naar de straling op elke
+#   gevel, met de invalshoek van de zon. Zonnewinst in kW =
+#   K_ZON x (A_ZUID x straling zuidgevel x deel screens open
+#            + A_NOORD x straling noordgevel) / 1000.
+#   A_ZUID / A_NOORD  glasoppervlak x zontoetreding in m2, uit de
+#         bouwtekening: achtergevel 15,2 m2 kozijn, voorgevel 5,8 m2 kozijn,
+#         ~78% glas, HR++ (zontoetreding 0,6)
+#   K_ZON correctiefactor, geijkt op hele etmalen 10-12 oktober met de
+#         warmtepomp uit (1,4-2,0); vangt ook interne warmte overdag op
 #   WTW_OFFSET  zijn alle kamerthermostaten onbeschikbaar, dan geldt de
 #         binnentemperatuur van de WTW plus deze correctie (die meet gemiddeld
 #         0,36 graad lager dan de kamers)
@@ -159,7 +165,11 @@ template:
           wa: >
             {% set H = 0.17 %}
             {% set P_INT = 0.4 %}
-            {% set A_ZON = 12 %}
+            {% set A_ZUID = 7.1 %}
+            {% set A_NOORD = 2.7 %}
+            {% set K_ZON = 1.8 %}
+            {% set GEVEL_ZUID = 170 %}
+            {% set GEVEL_NOORD = 350 %}
             {% set WTW_OFFSET = 0.36 %}
             {% set temps = kamers | map('state_attr', 'current_temperature')
                  | reject('none') | map('float') | list %}
@@ -175,12 +185,30 @@ template:
               {# Dichte screens: geen zonnewinst; onbekende stand telt als open. #}
               {% set pos = state_attr('cover.screens', 'current_position') %}
               {% set open = pos | float / 100 if is_number(pos) else 1 %}
-              {% set zon = A_ZON * (states('sensor.st_00125314_straling') | float(0)) / 1000 * open %}
+              {% set el = states('sensor.sun_solar_elevation') | float(-90) %}
+              {% set az = states('sensor.sun_solar_azimuth') | float(0) %}
+              {% set ghi = states('sensor.st_00125314_straling') | float(0) %}
+              {% set g = namespace(zuid=0, noord=0) %}
+              {% if el > 1 and ghi > 0 %}
+                {% set sh = sin(el * pi / 180) %}
+                {% set kt = [ghi / (1367 * sh), 1] | min %}
+                {% set fd = 1 - 0.09 * kt if kt <= 0.22 else 0.165 if kt > 0.8
+                     else 0.9511 - 0.1604 * kt + 4.388 * kt ** 2 - 16.638 * kt ** 3 + 12.336 * kt ** 4 %}
+                {% set dhi = ghi * fd %}
+                {% set dni = (ghi - dhi) / sh %}
+                {# Diffuus licht op een verticaal vlak plus 20% grondreflectie. #}
+                {% set rest = dhi * 0.5 + ghi * 0.1 %}
+                {% set g.zuid = dni * [cos(el * pi / 180) * cos((az - GEVEL_ZUID) * pi / 180), 0] | max + rest %}
+                {% set g.noord = dni * [cos(el * pi / 180) * cos((az - GEVEL_NOORD) * pi / 180), 0] | max + rest %}
+              {% endif %}
+              {% set zon = K_ZON * (A_ZUID * g.zuid * open + A_NOORD * g.noord) / 1000 %}
               {{ {
                    'ok': true,
                    'verlies': verlies | round(2),
                    'zon': zon | round(2),
                    'screens_open': (open * 100) | round(0) | int,
+                   'straling_zuid': g.zuid | round(0) | int,
+                   'straling_noord': g.noord | round(0) | int,
                    'vraag': (verlies - P_INT - zon) | round(2),
                    'binnen': t_in | round(1),
                    'binnenbron': bron,
@@ -214,6 +242,8 @@ template:
         attributes:
           zonnewinst_kw: "{{ wa.zon }}"
           screens_open_procent: "{{ wa.screens_open }}"
+          straling_zuidgevel_wm2: "{{ wa.straling_zuid }}"
+          straling_noordgevel_wm2: "{{ wa.straling_noord }}"
           interne_warmte_kw: 0.4
       - name: Binnentemperatuur huis
         unique_id: binnentemperatuur_huis
