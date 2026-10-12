@@ -1,4 +1,4 @@
-# Version: 1.4.0
+# Version: 1.5.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Simuleert uur voor uur hoe het huis afkoelt zonder verwarming en zonder zon,
@@ -26,8 +26,9 @@
 #   C     warmtecapaciteit van het huis in kWh per graad
 #   T_MIN onder deze gemiddelde binnentemperatuur is verwarming nodig
 #   A_ZON effectief zonoppervlak in m2: zonnewinst in kW = A_ZON x gemeten
-#         straling in kW/m2 x deel dat de screens open staan (uit de
-#         winterfit: 3,43 kWh warmte per kWh/m2 instraling met open screens)
+#         straling in kW/m2 x deel dat de screens open staan. Gefit op
+#         7-12 oktober met de warmtepomp uit (11-14 m2). Geldt voor de lage
+#         herfst- en winterzon; in de zomer valt er minder op de gevel.
 #   WTW_OFFSET  zijn alle kamerthermostaten onbeschikbaar, dan geldt de
 #         binnentemperatuur van de WTW plus deze correctie (die meet gemiddeld
 #         0,36 graad lager dan de kamers)
@@ -158,7 +159,7 @@ template:
           wa: >
             {% set H = 0.17 %}
             {% set P_INT = 0.4 %}
-            {% set A_ZON = 3.43 %}
+            {% set A_ZON = 12 %}
             {% set WTW_OFFSET = 0.36 %}
             {% set temps = kamers | map('state_attr', 'current_temperature')
                  | reject('none') | map('float') | list %}
