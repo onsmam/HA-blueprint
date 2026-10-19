@@ -1,4 +1,4 @@
-# Version: 1.1.0
+# Version: 1.1.1
 blueprint:
   domain: automation
   name: "🔥 Warmtepomp - stookseizoen aan/uit"
@@ -231,7 +231,11 @@ variables:
   off_months: !input off_months
 
   v_heating_on: "{{ is_state(heating_switch, 'on') }}"
-  v_month: "{{ now().month | string }}"
+  v_month: "{{ now().month }}"
+  # Maanden uit de selector zijn tekst ("10"); Home Assistant maakt van een
+  # template-uitkomst als "10" een getal, dus vergelijken als getallen.
+  v_on_month: "{{ now().month in on_months | map('int') | list }}"
+  v_off_month: "{{ now().month in off_months | map('int') | list }}"
   v_hours: "{{ states(hours_entity) }}"
   v_indoor: "{{ states(indoor_entity) }}"
   v_outdoor_avg: "{{ states(outdoor_avg_entity) }}"
@@ -244,11 +248,11 @@ variables:
 
   v_turn_on: >
     {{ trigger.id in ['on_forecast', 'on_cold', 'on_start']
-       and v_month in on_months and not v_heating_on | bool
+       and v_on_month | bool and not v_heating_on | bool
        and (v_heat_soon | bool or v_too_cold | bool) }}
   v_turn_off: >
     {{ trigger.id == 'off_check'
-       and v_month in off_months and v_heating_on | bool
+       and v_off_month | bool and v_heating_on | bool
        and v_warm_past | bool and v_warm_next | bool }}
 
   v_reason: >
@@ -258,10 +262,10 @@ variables:
        else 'uitzetten: buiten gem. ' ~ v_outdoor_avg ~ '°C en verwachting ' ~ v_forecast_avg ~ '°C > ' ~ heat_threshold ~ '°C'
        if v_turn_off | bool
        else 'niets doen: verwarming staat al aan' if trigger.id != 'off_check' and v_heating_on | bool
-       else 'niets doen: maand ' ~ v_month ~ ' valt buiten de stookmaanden' if trigger.id != 'off_check' and v_month not in on_months
+       else 'niets doen: maand ' ~ v_month ~ ' valt buiten de stookmaanden' if trigger.id != 'off_check' and not v_on_month | bool
        else 'niets doen: geen warmte nodig binnen ' ~ lead_hours ~ ' u en binnen niet te koud' if trigger.id != 'off_check'
        else 'niets doen: verwarming staat al uit' if not v_heating_on | bool
-       else 'niets doen: maand ' ~ v_month ~ ' valt buiten de voorjaarsmaanden' if v_month not in off_months
+       else 'niets doen: maand ' ~ v_month ~ ' valt buiten de voorjaarsmaanden' if not v_off_month | bool
        else 'niets doen: buiten gem. ' ~ v_outdoor_avg ~ '°C / verwachting ' ~ v_forecast_avg ~ '°C, niet beide boven ' ~ heat_threshold ~ '°C' }}
 
 action:
@@ -273,7 +277,7 @@ action:
             value_template: "{{ trigger.id in ['on_forecast', 'on_cold', 'on_start'] }}"
           - condition: template
             alias: "Maand valt in de stookmaanden"
-            value_template: "{{ v_month in on_months }}"
+            value_template: "{{ v_on_month | bool }}"
           - condition: template
             alias: "Verwarming staat nog uit"
             value_template: "{{ not v_heating_on | bool }}"
@@ -297,7 +301,7 @@ action:
             value_template: "{{ trigger.id == 'off_check' }}"
           - condition: template
             alias: "Maand valt in de voorjaarsmaanden"
-            value_template: "{{ v_month in off_months }}"
+            value_template: "{{ v_off_month | bool }}"
           - condition: template
             alias: "Verwarming staat nog aan"
             value_template: "{{ v_heating_on | bool }}"
