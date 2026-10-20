@@ -1,4 +1,4 @@
-# Version: 1.1.0
+# Version: 1.2.0
 blueprint:
   domain: automation
   name: "☀️ Zonwering - zonstand, regen & straling (multi-gevel)"
@@ -145,19 +145,21 @@ blueprint:
     heating_enabled_entities:
       name: "🔥 Verwarming vrijgegeven"
       description: >
-        Schakelaar die aangeeft dat de verwarming vrijgegeven is (stookseizoen),
-        bijvoorbeeld de verwarmingsschakelaar van de warmtepomp. Staat deze aan,
+        Entiteit die aangeeft dat de verwarming vrijgegeven is (stookseizoen),
+        bijvoorbeeld de verwarmingsmodus (select) of verwarmingsschakelaar van
+        de warmtepomp. Een select telt als vrijgegeven bij elke modus behalve
+        'off'. Staat de verwarming vrijgegeven,
         dan staat de warmtemodus altijd aan, ongeacht buiten- of
         binnentemperatuur. Zet deze schakelaar buiten het stookseizoen uit,
         anders sluiten de screens nooit meer voor de zon. Leeg laten: alleen
         de temperatuurregels hieronder gelden.
       default:
-        - switch.luxtronik_281211_0164_heating
+        - select.luxtronik_281211_0164_heating_mode
       selector:
         entity:
           multiple: true
           filter:
-            - domain: [switch, input_boolean, binary_sensor]
+            - domain: [select, input_select, switch, input_boolean, binary_sensor]
 
     indoor_avg_entities:
       name: "🌡️ Gemiddelde binnentemperatuur (24 uur)"
@@ -667,10 +669,12 @@ trigger:
     id: heat
   - platform: template
     id: heat
-    value_template: "{{ tv_heating_enabled | select('is_state', 'on') | list | count > 0 }}"
+    value_template: >
+      {{ tv_heating_enabled | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count > 0 }}
   - platform: template
     id: heat
-    value_template: "{{ tv_heating_enabled | select('is_state', 'on') | list | count == 0 }}"
+    value_template: >
+      {{ tv_heating_enabled | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count == 0 }}
   - platform: template
     id: heat
     value_template: "{{ tv_heat_forecast | select('is_state', 'on') | list | count > 0 }}"
@@ -859,7 +863,9 @@ variables:
   v_raining: "{{ is_state(rain_entity, 'on') }}"
 
   v_outdoor_avg: "{{ states(heat_avg_temp_entity) | float(99) }}"
-  v_heating_enabled: "{{ heating_enabled_entities | select('is_state', 'on') | list | count > 0 }}"
+  # Vrijgegeven: schakelaar 'on', of een select in elke modus behalve 'off'.
+  v_heating_enabled: >
+    {{ heating_enabled_entities | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count > 0 }}
   # Geen of onbeschikbare binnensensor: alleen de buitentemperatuur telt.
   v_indoor_avg: >
     {% set t = states(indoor_avg_entities | first) if indoor_avg_entities | count > 0 else 'none' %}
