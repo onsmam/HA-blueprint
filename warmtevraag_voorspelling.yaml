@@ -1,12 +1,16 @@
-# Version: 1.7.0
+# Version: 1.8.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Simuleert uur voor uur hoe het huis afkoelt zonder verwarming, met de
-# uurverwachting van de buitentemperatuur. Twee varianten:
+# uurverwachting van de buitentemperatuur. Uitkomsten:
 # - sensor.uren_tot_warmtevraag: met de verwachte zon (UV-index); de
 #   realistische verwachting wanneer verwarming nodig is (stookseizoen).
-# - attribuut uren_zonder_zon: zonder zon. Ligt dat binnen de horizon, dan is
-#   zonnewarmte die nu binnenkomt nuttig (buffer in vloer en muren) en staat
+# - sensor.laagste_binnentemperatuur_48_uur: de laagste verwachte
+#   binnentemperatuur (met zon); rustiger dan de uren, want die springen
+#   tussen "bijna" en "nooit" als het huis rond het minimum in balans is.
+# - zonder zon (attributen uren_zonder_zon en laagste_48_uur_zonder_zon): zakt
+#   het huis de komende 48 uur onder het minimum, dan is zonnewarmte die nu
+#   binnenkomt nuttig (buffer in vloer en muren) en staat
 #   binary_sensor.zonnewarmte_nuttig aan. Die kan de warmtemodus van de
 #   blueprint 'Zonwering multi-gevel' aansturen. Hier telt de verwachte zon
 #   bewust niet mee: die komt alleen binnen als de screens open blijven.
@@ -92,7 +96,8 @@ template:
               {{ {'ok': false} }}
             {% else %}
               {# t/uren: met verwachte zon; t0/uren0: zonder zon. #}
-              {% set ns = namespace(t=t_in, uren=none, t0=t_in, uren0=none, t24=t_in, buiten24=0, uv24=0, zon24=0) %}
+              {% set ns = namespace(t=t_in, uren=none, t0=t_in, uren0=none, t24=t_in, buiten24=0, uv24=0, zon24=0,
+                   min12=t_in, min48=t_in, min48_0=t_in, min48_uur=0) %}
               {% for f in fl %}
                 {% set uv = f.uv_index | float(0) if f.uv_index is defined else 0 %}
                 {% set zon = K_ZON * ZON_PER_UV * UV_WEGING * uv %}
@@ -103,6 +108,16 @@ template:
                 {% endif %}
                 {% if ns.uren0 is none and ns.t0 < T_MIN %}
                   {% set ns.uren0 = loop.index %}
+                {% endif %}
+                {% if loop.index <= 12 and ns.t < ns.min12 %}
+                  {% set ns.min12 = ns.t %}
+                {% endif %}
+                {% if loop.index <= 48 %}
+                  {% if ns.t < ns.min48 %}
+                    {% set ns.min48 = ns.t %}
+                    {% set ns.min48_uur = loop.index %}
+                  {% endif %}
+                  {% set ns.min48_0 = [ns.min48_0, ns.t0] | min %}
                 {% endif %}
                 {% if loop.index <= 24 %}
                   {% set ns.buiten24 = ns.buiten24 + f.temperature | float %}
@@ -117,6 +132,10 @@ template:
                    'uren': ns.uren if ns.uren is not none else fl | count,
                    'bereikt': ns.uren is not none,
                    'uren0': ns.uren0 if ns.uren0 is not none else fl | count,
+                   'min12': ns.min12 | round(2),
+                   'min48': ns.min48 | round(2),
+                   'min48_uur': ns.min48_uur,
+                   'min48_0': ns.min48_0 | round(2),
                    'binnen_nu': t_in | round(1),
                    'binnenbron': bron,
                    'binnen_over_24u': ns.t24 | round(1),
@@ -147,23 +166,40 @@ template:
           lengte_verwachting_uren: "{{ wv.verwachting_uren }}"
           uv_uren_24u: "{{ wv.uv_uren_24u }}"
           zonnewinst_24u_kwh: "{{ wv.zonnewinst_24u_kwh }}"
+      # Rustiger dan de uren: als het huis rond de minimumtemperatuur in balans
+      # is, springen de uren tussen "bijna" en "nooit", terwijl de laagste
+      # verwachte temperatuur maar een paar tienden verschuift.
+      - name: Laagste binnentemperatuur 48 uur
+        unique_id: laagste_binnentemperatuur_48_uur
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        icon: mdi:home-thermometer
+        availability: "{{ wv.ok }}"
+        state: "{{ wv.min48 }}"
+        attributes:
+          over_uren: "{{ wv.min48_uur }}"
+          laagste_12_uur: "{{ wv.min12 }}"
+          laagste_48_uur_zonder_zon: "{{ wv.min48_0 }}"
 
   - binary_sensor:
-      # Aan als het huis zonder verwarming en zonder zon binnen HORIZON uur
-      # onder de minimumtemperatuur zakt. Pas uit bij 6 uur boven de horizon,
-      # zodat een kleine wijziging in de verwachting de screens niet laat
-      # pendelen.
+      # Aan als het huis zonder verwarming en zonder zon de komende 48 uur onder
+      # de minimumtemperatuur zakt. Pas uit als de laagste temperatuur weer
+      # MARGE boven het minimum ligt, zodat een kleine wijziging in de
+      # verwachting de screens niet laat pendelen.
       - name: Zonnewarmte nuttig
         unique_id: zonnewarmte_nuttig
         icon: mdi:sun-thermometer-outline
-        availability: "{{ is_number(state_attr('sensor.uren_tot_warmtevraag', 'uren_zonder_zon')) }}"
+        availability: "{{ is_number(state_attr('sensor.laagste_binnentemperatuur_48_uur', 'laagste_48_uur_zonder_zon')) }}"
         state: >
-          {% set HORIZON = 48 %}
-          {% set h = state_attr('sensor.uren_tot_warmtevraag', 'uren_zonder_zon') | float(999) %}
-          {{ h <= (HORIZON + 6 if this.state == 'on' else HORIZON) }}
+          {% set T_MIN = 21 %}
+          {% set MARGE = 0.2 %}
+          {% set t = state_attr('sensor.laagste_binnentemperatuur_48_uur', 'laagste_48_uur_zonder_zon') | float(99) %}
+          {{ t < (T_MIN + MARGE if this.state == 'on' else T_MIN) }}
         attributes:
           # Uren zonder zon; de zonwering-blueprint toont dit in de trace.
           uren_tot_warmtevraag: "{{ state_attr('sensor.uren_tot_warmtevraag', 'uren_zonder_zon') }}"
+          laagste_48_uur_zonder_zon: "{{ state_attr('sensor.laagste_binnentemperatuur_48_uur', 'laagste_48_uur_zonder_zon') }}"
 
   # Actueel warmteverlies en warmtevraag met hetzelfde huismodel (houd H en
   # P_INT gelijk aan de voorspelling hierboven).
