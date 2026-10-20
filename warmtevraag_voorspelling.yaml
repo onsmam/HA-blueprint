@@ -1,7 +1,8 @@
-# Version: 1.7.0
+# Version: 1.8.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
-# Simuleert uur voor uur hoe het huis afkoelt zonder verwarming, met de
+# Rekent uit hoe lang de warmte die het huis boven de minimumtemperatuur heeft
+# (buffer) meegaat tegen het verwachte netto warmteverlies per uur, met de
 # uurverwachting van de buitentemperatuur. Twee varianten:
 # - sensor.uren_tot_warmtevraag: met de verwachte zon (UV-index); de
 #   realistische verwachting wanneer verwarming nodig is (stookseizoen).
@@ -91,19 +92,30 @@ template:
             {% if t_in is none or fl | count == 0 %}
               {{ {'ok': false} }}
             {% else %}
-              {# t/uren: met verwachte zon; t0/uren0: zonder zon. #}
-              {% set ns = namespace(t=t_in, uren=none, t0=t_in, uren0=none, t24=t_in, buiten24=0, uv24=0, zon24=0) %}
+              {# Uren tot warmtevraag: hoe lang de warmte boven T_MIN (buffer)
+                 meegaat tegen het verwachte netto verlies per uur. Uren met
+                 zonne-overschot tellen als nul in plaats van de buffer aan te
+                 vullen; zo loopt het verbruik alleen op en springt de uitkomst
+                 niet tussen "bijna" en "nooit" als het huis rond T_MIN in
+                 balans is. uren: met verwachte zon; uren0: zonder zon. #}
+              {% set buf = C * (t_in - T_MIN) %}
+              {% set tm = (t_in + T_MIN) / 2 %}
+              {% set ns = namespace(t=t_in, uren=0 if buf <= 0 else none, uren0=0 if buf <= 0 else none,
+                   cum=0, cum0=0, t24=t_in, buiten24=0, uv24=0, zon24=0) %}
               {% for f in fl %}
                 {% set uv = f.uv_index | float(0) if f.uv_index is defined else 0 %}
                 {% set zon = K_ZON * ZON_PER_UV * UV_WEGING * uv %}
                 {% set ns.t = ns.t - (H * (ns.t - f.temperature | float) - P_INT - zon) / C %}
-                {% set ns.t0 = ns.t0 - (H * (ns.t0 - f.temperature | float) - P_INT) / C %}
-                {% if ns.uren is none and ns.t < T_MIN %}
-                  {% set ns.uren = loop.index %}
+                {% set d0 = [H * (tm - f.temperature | float) - P_INT, 0] | max %}
+                {% set d = [d0 - zon, 0] | max %}
+                {% if ns.uren is none and ns.cum + d >= buf %}
+                  {% set ns.uren = loop.index0 + (buf - ns.cum) / d %}
                 {% endif %}
-                {% if ns.uren0 is none and ns.t0 < T_MIN %}
-                  {% set ns.uren0 = loop.index %}
+                {% if ns.uren0 is none and ns.cum0 + d0 >= buf %}
+                  {% set ns.uren0 = loop.index0 + (buf - ns.cum0) / d0 %}
                 {% endif %}
+                {% set ns.cum = ns.cum + d %}
+                {% set ns.cum0 = ns.cum0 + d0 %}
                 {% if loop.index <= 24 %}
                   {% set ns.buiten24 = ns.buiten24 + f.temperature | float %}
                   {% set ns.uv24 = ns.uv24 + uv %}
@@ -114,9 +126,9 @@ template:
               {% set buiten24 = ns.buiten24 / ([fl | count, 24] | min) %}
               {{ {
                    'ok': true,
-                   'uren': ns.uren if ns.uren is not none else fl | count,
+                   'uren': (ns.uren | round(0) | int) if ns.uren is not none else fl | count,
                    'bereikt': ns.uren is not none,
-                   'uren0': ns.uren0 if ns.uren0 is not none else fl | count,
+                   'uren0': (ns.uren0 | round(0) | int) if ns.uren0 is not none else fl | count,
                    'binnen_nu': t_in | round(1),
                    'binnenbron': bron,
                    'binnen_over_24u': ns.t24 | round(1),
