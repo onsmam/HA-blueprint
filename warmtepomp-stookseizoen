@@ -1,4 +1,4 @@
-# Version: 1.1.1
+# Version: 1.2.0
 blueprint:
   domain: automation
   name: "🔥 Warmtepomp - stookseizoen aan/uit"
@@ -18,12 +18,28 @@ blueprint:
   input:
     heating_switch:
       name: "🔥 Verwarming vrijgegeven"
-      description: Schakelaar die de verwarming van de warmtepomp vrijgeeft.
-      default: switch.luxtronik_281211_0164_heating
+      description: >
+        Entiteit die de verwarming van de warmtepomp vrijgeeft. Een select
+        (zoals de verwarmingsmodus van de Luxtronik) wordt geschakeld tussen
+        de opties hieronder; een schakelaar wordt aan- en uitgezet. Bij een
+        select telt elke modus behalve de uit-optie als vrijgegeven.
+      default: select.luxtronik_281211_0164_heating_mode
       selector:
         entity:
           filter:
-            - domain: [switch, input_boolean]
+            - domain: [select, input_select, switch, input_boolean]
+
+    heating_on_option:
+      name: "Optie voor vrijgeven (select)"
+      default: automatic
+      selector:
+        text: {}
+
+    heating_off_option:
+      name: "Optie voor uitzetten (select)"
+      default: "off"
+      selector:
+        text: {}
 
     notify_devices:
       name: "📱 Pushbericht naar"
@@ -220,6 +236,9 @@ trigger:
 
 variables:
   heating_switch: !input heating_switch
+  heating_on_option: !input heating_on_option
+  heating_off_option: !input heating_off_option
+  v_is_select: "{{ heating_switch.split('.')[0] in ['select', 'input_select'] }}"
   notify_devices: !input notify_devices
   hours_entity: !input hours_entity
   lead_hours: !input lead_hours
@@ -230,7 +249,9 @@ variables:
   heat_threshold: !input heat_threshold
   off_months: !input off_months
 
-  v_heating_on: "{{ is_state(heating_switch, 'on') }}"
+  v_heating_on: >
+    {% set s = states(heating_switch) %}
+    {{ s not in [heating_off_option, 'unavailable', 'unknown'] if v_is_select | bool else s == 'on' }}
   v_month: "{{ now().month }}"
   # Maanden uit de selector zijn tekst ("10"); Home Assistant maakt van een
   # template-uitkomst als "10" een getal, dus vergelijken als getallen.
@@ -291,9 +312,20 @@ action:
                 alias: "Binnen onder de minimumtemperatuur"
                 value_template: "{{ v_too_cold | bool }}"
         sequence:
-          - service: homeassistant.turn_on
-            target:
-              entity_id: !input heating_switch
+          - if:
+              - condition: template
+                alias: "Verwarming is een select"
+                value_template: "{{ v_is_select | bool }}"
+            then:
+              - service: "{{ heating_switch.split('.')[0] }}.select_option"
+                target:
+                  entity_id: !input heating_switch
+                data:
+                  option: "{{ heating_on_option }}"
+            else:
+              - service: homeassistant.turn_on
+                target:
+                  entity_id: !input heating_switch
       - alias: "Stookseizoen uit"
         conditions:
           - condition: template
@@ -312,9 +344,20 @@ action:
             alias: "Komende 24 uur gemiddeld boven de stookgrens"
             value_template: "{{ v_warm_next | bool }}"
         sequence:
-          - service: homeassistant.turn_off
-            target:
-              entity_id: !input heating_switch
+          - if:
+              - condition: template
+                alias: "Verwarming is een select"
+                value_template: "{{ v_is_select | bool }}"
+            then:
+              - service: "{{ heating_switch.split('.')[0] }}.select_option"
+                target:
+                  entity_id: !input heating_switch
+                data:
+                  option: "{{ heating_off_option }}"
+            else:
+              - service: homeassistant.turn_off
+                target:
+                  entity_id: !input heating_switch
 
   # Melding alleen als er geschakeld is.
   - if:
