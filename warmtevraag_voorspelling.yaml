@@ -97,7 +97,11 @@ template:
                  zonne-overschot tellen als nul in plaats van de buffer aan te
                  vullen; zo loopt het verbruik alleen op en springt de uitkomst
                  niet tussen "bijna" en "nooit" als het huis rond T_MIN in
-                 balans is. uren: met verwachte zon; uren0: zonder zon. #}
+                 balans is. Klopt de verwachting, dan telt de sensor ~1 per
+                 uur af (de verwachte zon zit al in het getal); hij loopt pas
+                 op als de binnentemperatuur meer stijgt dan verwacht, door
+                 extra zon of door de warmtepomp.
+                 uren: met verwachte zon; uren0: zonder zon. #}
               {% set buf = C * (t_in - T_MIN) %}
               {% set tm = (t_in + T_MIN) / 2 %}
               {% set ns = namespace(t=t_in, uren=0 if buf <= 0 else none, uren0=0 if buf <= 0 else none,
