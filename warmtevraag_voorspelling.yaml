@@ -1,12 +1,15 @@
-# Version: 1.6.0
+# Version: 1.7.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
-# Simuleert uur voor uur hoe het huis afkoelt zonder verwarming en zonder zon,
-# met de uurverwachting van de buitentemperatuur. Uitkomst: het aantal uren
-# tot het huis onder de minimumtemperatuur zakt. Ligt dat binnen de horizon,
-# dan is zonnewarmte die nu binnenkomt nuttig (buffer in vloer en muren) en
-# staat binary_sensor.zonnewarmte_nuttig aan. Die kan de warmtemodus van de
-# blueprint 'Zonwering multi-gevel' aansturen.
+# Simuleert uur voor uur hoe het huis afkoelt zonder verwarming, met de
+# uurverwachting van de buitentemperatuur. Twee varianten:
+# - sensor.uren_tot_warmtevraag: met de verwachte zon (UV-index); de
+#   realistische verwachting wanneer verwarming nodig is (stookseizoen).
+# - attribuut uren_zonder_zon: zonder zon. Ligt dat binnen de horizon, dan is
+#   zonnewarmte die nu binnenkomt nuttig (buffer in vloer en muren) en staat
+#   binary_sensor.zonnewarmte_nuttig aan. Die kan de warmtemodus van de
+#   blueprint 'Zonwering multi-gevel' aansturen. Hier telt de verwachte zon
+#   bewust niet mee: die komt alleen binnen als de screens open blijven.
 #
 # Daarnaast: sensor.warmteverlies_actueel (kW die het huis nu verliest) en
 # sensor.warmtevraag_actueel (dat verlies min interne warmte en gemeten
@@ -20,7 +23,9 @@
 #     packages: !include_dir_named packages
 # of kopieer het template:-blok naar configuration.yaml.
 #
-# Huismodel (afgeleid uit afkoelnachten met de warmtepomp uit):
+# Huismodel, gefit op 12-19 oktober met de warmtepomp uit. Die dagen bepalen
+# alleen de verhoudingen (afkoeltijd C/H ~235 uur); H komt uit de winterdata en
+# wordt herzien met de warmtemeter zodra de warmtepomp een tijd draait:
 #   H     warmteverlies in kW per graad verschil binnen-buiten
 #   P_INT interne warmte (apparaten, mensen) in kW
 #   C     warmtecapaciteit van het huis in kWh per graad
@@ -33,8 +38,14 @@
 #   A_ZUID / A_NOORD  glasoppervlak x zontoetreding in m2, uit de
 #         bouwtekening: achtergevel 15,2 m2 kozijn, voorgevel 5,8 m2 kozijn,
 #         ~78% glas, HR++ (zontoetreding 0,6)
-#   K_ZON correctiefactor, geijkt op hele etmalen 10-12 oktober met de
-#         warmtepomp uit (1,4-2,0); vangt ook interne warmte overdag op
+#   K_ZON correctiefactor op de zonnewinst, gefit op hele etmalen 12-19
+#         oktober met de warmtepomp uit
+#   ZON_PER_UV  zonnewinst op de gevels in kW per UV-indexpunt (zonder K_ZON,
+#         screens open), gemeten met de Tempest in oktober (R2 0,96). In de
+#         winter is de UV-index relatief laag, dan rekent de voorspelling met
+#         te weinig zon (veilige kant).
+#   UV_WEGING  deel van de verwachte UV-index dat meetelt; de weersverwachting
+#         schat de UV bij bewolking eerder te hoog
 #   WTW_OFFSET  zijn alle kamerthermostaten onbeschikbaar, dan geldt de
 #         binnentemperatuur van de WTW plus deze correctie (die meet gemiddeld
 #         0,36 graad lager dan de kamers)
@@ -58,8 +69,11 @@ template:
       - variables:
           wv: >
             {% set H = 0.17 %}
-            {% set P_INT = 0.4 %}
-            {% set C = 27 %}
+            {% set P_INT = 0.24 %}
+            {% set C = 40 %}
+            {% set K_ZON = 2.0 %}
+            {% set ZON_PER_UV = 1.86 %}
+            {% set UV_WEGING = 0.5 %}
             {% set T_MIN = 21 %}
             {% set WTW_OFFSET = 0.36 %}
             {% set rooms = [
@@ -77,14 +91,23 @@ template:
             {% if t_in is none or fl | count == 0 %}
               {{ {'ok': false} }}
             {% else %}
-              {% set ns = namespace(t=t_in, uren=none, t24=t_in, buiten24=0) %}
+              {# t/uren: met verwachte zon; t0/uren0: zonder zon. #}
+              {% set ns = namespace(t=t_in, uren=none, t0=t_in, uren0=none, t24=t_in, buiten24=0, uv24=0, zon24=0) %}
               {% for f in fl %}
-                {% set ns.t = ns.t - (H * (ns.t - f.temperature | float) - P_INT) / C %}
+                {% set uv = f.uv_index | float(0) if f.uv_index is defined else 0 %}
+                {% set zon = K_ZON * ZON_PER_UV * UV_WEGING * uv %}
+                {% set ns.t = ns.t - (H * (ns.t - f.temperature | float) - P_INT - zon) / C %}
+                {% set ns.t0 = ns.t0 - (H * (ns.t0 - f.temperature | float) - P_INT) / C %}
                 {% if ns.uren is none and ns.t < T_MIN %}
                   {% set ns.uren = loop.index %}
                 {% endif %}
+                {% if ns.uren0 is none and ns.t0 < T_MIN %}
+                  {% set ns.uren0 = loop.index %}
+                {% endif %}
                 {% if loop.index <= 24 %}
                   {% set ns.buiten24 = ns.buiten24 + f.temperature | float %}
+                  {% set ns.uv24 = ns.uv24 + uv %}
+                  {% set ns.zon24 = ns.zon24 + zon %}
                   {% set ns.t24 = ns.t %}
                 {% endif %}
               {% endfor %}
@@ -93,11 +116,14 @@ template:
                    'ok': true,
                    'uren': ns.uren if ns.uren is not none else fl | count,
                    'bereikt': ns.uren is not none,
+                   'uren0': ns.uren0 if ns.uren0 is not none else fl | count,
                    'binnen_nu': t_in | round(1),
                    'binnenbron': bron,
                    'binnen_over_24u': ns.t24 | round(1),
                    'buiten_gem_24u': buiten24 | round(1),
-                   'warmtevraag_24u_kwh': ([(H * (T_MIN - buiten24) - P_INT) * 24, 0] | max) | round(1),
+                   'warmtevraag_24u_kwh': ([(H * (T_MIN - buiten24) - P_INT) * 24 - ns.zon24, 0] | max) | round(1),
+                   'uv_uren_24u': ns.uv24 | round(1),
+                   'zonnewinst_24u_kwh': ns.zon24 | round(1),
                    'buffer_kwh': (C * (t_in - T_MIN)) | round(1),
                    'verwachting_uren': fl | count
                  } }}
@@ -111,6 +137,7 @@ template:
         state: "{{ wv.uren }}"
         attributes:
           bereikt_binnen_verwachting: "{{ wv.bereikt }}"
+          uren_zonder_zon: "{{ wv.uren0 }}"
           binnentemperatuur_nu: "{{ wv.binnen_nu }}"
           binnentemperatuur_bron: "{{ wv.binnenbron }}"
           binnentemperatuur_over_24u: "{{ wv.binnen_over_24u }}"
@@ -118,21 +145,25 @@ template:
           warmtevraag_24u_kwh: "{{ wv.warmtevraag_24u_kwh }}"
           buffer_boven_minimum_kwh: "{{ wv.buffer_kwh }}"
           lengte_verwachting_uren: "{{ wv.verwachting_uren }}"
+          uv_uren_24u: "{{ wv.uv_uren_24u }}"
+          zonnewinst_24u_kwh: "{{ wv.zonnewinst_24u_kwh }}"
 
   - binary_sensor:
-      # Aan als het huis zonder verwarming binnen HORIZON uur onder de
-      # minimumtemperatuur zakt. Pas uit bij 6 uur boven de horizon, zodat een
-      # kleine wijziging in de verwachting de screens niet laat pendelen.
+      # Aan als het huis zonder verwarming en zonder zon binnen HORIZON uur
+      # onder de minimumtemperatuur zakt. Pas uit bij 6 uur boven de horizon,
+      # zodat een kleine wijziging in de verwachting de screens niet laat
+      # pendelen.
       - name: Zonnewarmte nuttig
         unique_id: zonnewarmte_nuttig
         icon: mdi:sun-thermometer-outline
-        availability: "{{ is_number(states('sensor.uren_tot_warmtevraag')) }}"
+        availability: "{{ is_number(state_attr('sensor.uren_tot_warmtevraag', 'uren_zonder_zon')) }}"
         state: >
           {% set HORIZON = 48 %}
-          {% set h = states('sensor.uren_tot_warmtevraag') | float(999) %}
+          {% set h = state_attr('sensor.uren_tot_warmtevraag', 'uren_zonder_zon') | float(999) %}
           {{ h <= (HORIZON + 6 if this.state == 'on' else HORIZON) }}
         attributes:
-          uren_tot_warmtevraag: "{{ states('sensor.uren_tot_warmtevraag') }}"
+          # Uren zonder zon; de zonwering-blueprint toont dit in de trace.
+          uren_tot_warmtevraag: "{{ state_attr('sensor.uren_tot_warmtevraag', 'uren_zonder_zon') }}"
 
   # Actueel warmteverlies en warmtevraag met hetzelfde huismodel (houd H en
   # P_INT gelijk aan de voorspelling hierboven).
@@ -164,10 +195,10 @@ template:
           kamers: *kamers
           wa: >
             {% set H = 0.17 %}
-            {% set P_INT = 0.4 %}
+            {% set P_INT = 0.24 %}
             {% set A_ZUID = 7.1 %}
             {% set A_NOORD = 2.7 %}
-            {% set K_ZON = 1.8 %}
+            {% set K_ZON = 2.0 %}
             {% set GEVEL_ZUID = 170 %}
             {% set GEVEL_NOORD = 350 %}
             {% set WTW_OFFSET = 0.36 %}
@@ -244,7 +275,7 @@ template:
           screens_open_procent: "{{ wa.screens_open }}"
           straling_zuidgevel_wm2: "{{ wa.straling_zuid }}"
           straling_noordgevel_wm2: "{{ wa.straling_noord }}"
-          interne_warmte_kw: 0.4
+          interne_warmte_kw: 0.24
       - name: Binnentemperatuur huis
         unique_id: binnentemperatuur_huis
         unit_of_measurement: "°C"
