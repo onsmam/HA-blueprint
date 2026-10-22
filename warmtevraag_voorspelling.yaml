@@ -1,4 +1,4 @@
-# Version: 1.8.0
+# Version: 1.9.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Rekent uit hoe lang de warmte die het huis boven de minimumtemperatuur heeft
@@ -11,6 +11,13 @@
 #   binary_sensor.zonnewarmte_nuttig aan. Die kan de warmtemodus van de
 #   blueprint 'Zonwering multi-gevel' aansturen. Hier telt de verwachte zon
 #   bewust niet mee: die komt alleen binnen als de screens open blijven.
+#
+# sensor.dao_graaddagenfactor: degree_days_factor voor de Day Ahead Optimizer
+# (warmtevraag komende 24 uur met verwachte zon per gewogen graaddag t.o.v.
+# 16 graden). Zet in de DAO-config "degree_days_factor":
+# "sensor.dao_graaddagenfactor". DAO_KALIBRATIE schaalt de factor als de DAO
+# structureel te veel of te weinig warmte blijkt in te plannen; DAO_MIN is de
+# ondergrens, omdat de verwachte zon de onzekerste schakel is.
 #
 # Daarnaast: sensor.warmteverlies_actueel (kW die het huis nu verliest) en
 # sensor.warmtevraag_actueel (dat verlies min interne warmte en gemeten
@@ -77,6 +84,9 @@ template:
             {% set UV_WEGING = 0.5 %}
             {% set T_MIN = 21 %}
             {% set WTW_OFFSET = 0.36 %}
+            {% set DAO_REF = 16 %}
+            {% set DAO_KALIBRATIE = 1.0 %}
+            {% set DAO_MIN = 1.0 %}
             {% set rooms = [
                  'climate.woonkamer', 'climate.keuken', 'climate.hal',
                  'climate.badkamer', 'climate.masterbedroom', 'climate.sophie',
@@ -105,7 +115,7 @@ template:
               {% set buf = C * (t_in - T_MIN) %}
               {% set tm = (t_in + T_MIN) / 2 %}
               {% set ns = namespace(t=t_in, uren=0 if buf <= 0 else none, uren0=0 if buf <= 0 else none,
-                   cum=0, cum0=0, t24=t_in, buiten24=0, uv24=0, zon24=0) %}
+                   cum=0, cum0=0, t24=t_in, buiten24=0, uv24=0, zon24=0, gd24=0, vraag24=0, vraag24_0=0) %}
               {% for f in fl %}
                 {% set uv = f.uv_index | float(0) if f.uv_index is defined else 0 %}
                 {% set zon = K_ZON * ZON_PER_UV * UV_WEGING * uv %}
@@ -125,9 +135,21 @@ template:
                   {% set ns.uv24 = ns.uv24 + uv %}
                   {% set ns.zon24 = ns.zon24 + zon %}
                   {% set ns.t24 = ns.t %}
+                  {% set ns.gd24 = ns.gd24 + [DAO_REF - f.temperature | float, 0] | max / 24 %}
+                  {% set ns.vraag24 = ns.vraag24 + H * (T_MIN - f.temperature | float) - P_INT - zon %}
+                  {% set ns.vraag24_0 = ns.vraag24_0 + H * (T_MIN - f.temperature | float) - P_INT %}
                 {% endif %}
               {% endfor %}
               {% set buiten24 = ns.buiten24 / ([fl | count, 24] | min) %}
+              {# Factor voor de Day Ahead Optimizer: verwachte warmtevraag van de
+                 komende 24 uur (met verwachte zon) per gewogen graaddag t.o.v.
+                 DAO_REF. Weging zoals KNMI: nov-feb 1,1, mrt/okt 1,0, apr-sep 0,8. #}
+              {% set m = now().month %}
+              {% set weging = 1.1 if m in [11, 12, 1, 2] else 1.0 if m in [3, 10] else 0.8 %}
+              {% set gdw = ns.gd24 * weging %}
+              {% set basis = H * 24 * DAO_KALIBRATIE %}
+              {% set dao = ([[DAO_KALIBRATIE * [ns.vraag24, 0] | max / gdw, DAO_MIN] | max, 12] | min) if gdw >= 0.2 else basis %}
+              {% set dao0 = ([[DAO_KALIBRATIE * [ns.vraag24_0, 0] | max / gdw, DAO_MIN] | max, 12] | min) if gdw >= 0.2 else basis %}
               {{ {
                    'ok': true,
                    'uren': (ns.uren | round(0) | int) if ns.uren is not none else fl | count,
@@ -137,7 +159,11 @@ template:
                    'binnenbron': bron,
                    'binnen_over_24u': ns.t24 | round(1),
                    'buiten_gem_24u': buiten24 | round(1),
-                   'warmtevraag_24u_kwh': ([(H * (T_MIN - buiten24) - P_INT) * 24 - ns.zon24, 0] | max) | round(1),
+                   'warmtevraag_24u_kwh': ([ns.vraag24, 0] | max) | round(1),
+                   'dao_factor': dao | round(2),
+                   'dao_factor0': dao0 | round(2),
+                   'graaddagen_24u': gdw | round(2),
+                   'weging': weging,
                    'uv_uren_24u': ns.uv24 | round(1),
                    'zonnewinst_24u_kwh': ns.zon24 | round(1),
                    'buffer_kwh': (C * (t_in - T_MIN)) | round(1),
@@ -162,6 +188,22 @@ template:
           buffer_boven_minimum_kwh: "{{ wv.buffer_kwh }}"
           lengte_verwachting_uren: "{{ wv.verwachting_uren }}"
           uv_uren_24u: "{{ wv.uv_uren_24u }}"
+          zonnewinst_24u_kwh: "{{ wv.zonnewinst_24u_kwh }}"
+      # Voor de Day Ahead Optimizer: degree_days_factor als sensor. Op grijze
+      # dagen hoger dan een vaste factor, op zonnige dagen lager, zodat de DAO
+      # minder warmtepompwarmte inplant als de zon het werk doet.
+      - name: DAO graaddagenfactor
+        unique_id: dao_graaddagenfactor
+        unit_of_measurement: "kWh/Kd"
+        state_class: measurement
+        icon: mdi:calculator-variant-outline
+        availability: "{{ wv.ok }}"
+        state: "{{ wv.dao_factor }}"
+        attributes:
+          factor_zonder_zon: "{{ wv.dao_factor0 }}"
+          gewogen_graaddagen_24u: "{{ wv.graaddagen_24u }}"
+          weging: "{{ wv.weging }}"
+          warmtevraag_24u_kwh: "{{ wv.warmtevraag_24u_kwh }}"
           zonnewinst_24u_kwh: "{{ wv.zonnewinst_24u_kwh }}"
 
   - binary_sensor:
