@@ -86,7 +86,7 @@ template:
             {% set K_ZON = 2.0 %}
             {% set ZON_PER_UV = 1.86 %}
             {% set UV_WEGING = {
-                 'sunny': 0.8, 'clear-night': 0.8, 'partlycloudy': 0.5,
+                 'sunny': 0.8, 'clear-night': 0, 'partlycloudy': 0.5,
                  'cloudy': 0.3, 'fog': 0.2, 'rainy': 0.2, 'pouring': 0.1,
                  'lightning': 0.3, 'lightning-rainy': 0.2, 'hail': 0.1,
                  'snowy': 0.2, 'snowy-rainy': 0.2, 'windy': 0.5,
