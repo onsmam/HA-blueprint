@@ -16,6 +16,9 @@ blueprint:
     naar hun basissetpoint. Een zone waarvan het setpoint met de hand op een
     andere waarde is gezet (niet basis + een geldige stap) blijft ongemoeid.
     De variabele v_reason in de trace toont de gekozen verschuiving.
+    Hoort bij de blueprint 'Warmtepomp - stooklijn (DAO + binnentemperatuur)',
+    die de comfortband laat meeschuiven met het setpoint van de
+    referentiethermostaat.
 
   input:
     zones:
@@ -141,14 +144,20 @@ max_exceeded: silent
 trigger_variables:
   tv_demand: !input demand_entities
   tv_demand_threshold: !input demand_threshold
+  tv_heating: !input heating_entities
 
 trigger:
   - platform: state
     entity_id: !input adjustment_entity
     id: dao
-  - platform: state
-    entity_id: !input heating_entities
+  - platform: template
     id: heating
+    value_template: >
+      {{ tv_heating | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count > 0 }}
+  - platform: template
+    id: heating
+    value_template: >
+      {{ tv_heating | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count == 0 }}
   # Zon gaat over de drempel: bufferen toestaan of tegenhouden.
   - platform: template
     id: sun
