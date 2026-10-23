@@ -1,4 +1,4 @@
-# Version: 1.0.0
+# Version: 1.1.0
 blueprint:
   domain: automation
   name: "🌡️ Thermostaten - bufferen met Day Ahead Optimizer"
@@ -137,13 +137,40 @@ blueprint:
           unit_of_measurement: "kW"
           mode: slider
 
-mode: queued
-max: 3
-max_exceeded: silent
+    demand_margin:
+      name: "Marge rond de drempel"
+      description: >
+        Hysterese voor de zonregel: wordt er gebufferd, dan stopt dat pas als
+        de warmtevraag onder drempel min marge komt; wordt er niet gebufferd,
+        dan begint het pas weer boven drempel plus marge. Voorkomt op en neer
+        schakelen bij wisselende bewolking.
+      default: 0.3
+      selector:
+        number:
+          min: 0
+          max: 2
+          step: 0.1
+          unit_of_measurement: "kW"
+          mode: slider
+
+    demand_delay:
+      name: "Vertraging zonregel"
+      description: Zo lang moet de warmtevraag buiten de marge blijven voordat de zon de setpoints verandert.
+      default:
+        hours: 0
+        minutes: 15
+        seconds: 0
+      selector:
+        duration: {}
+
+# Alleen de laatste run telt; snel opeenvolgende triggers geven zo geen heen en
+# weer gezette setpoints.
+mode: restart
 
 trigger_variables:
   tv_demand: !input demand_entities
   tv_demand_threshold: !input demand_threshold
+  tv_demand_margin: !input demand_margin
   tv_heating: !input heating_entities
 
 trigger:
@@ -158,17 +185,19 @@ trigger:
     id: heating
     value_template: >
       {{ tv_heating | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count == 0 }}
-  # Zon gaat over de drempel: bufferen toestaan of tegenhouden.
+  # Zon gaat duidelijk en blijvend over de drempel: bufferen stoppen of hervatten.
   - platform: template
     id: sun
+    for: !input demand_delay
     value_template: >
       {% set v = states(tv_demand | first) if tv_demand | count > 0 else 'none' %}
-      {{ is_number(v) and v | float < tv_demand_threshold | float }}
+      {{ is_number(v) and v | float < tv_demand_threshold | float - tv_demand_margin | float }}
   - platform: template
     id: sun
+    for: !input demand_delay
     value_template: >
       {% set v = states(tv_demand | first) if tv_demand | count > 0 else 'none' %}
-      {{ is_number(v) and v | float >= tv_demand_threshold | float }}
+      {{ is_number(v) and v | float > tv_demand_threshold | float + tv_demand_margin | float }}
   - platform: homeassistant
     event: start
     id: start
@@ -183,6 +212,7 @@ variables:
   step: !input step
   demand_entities: !input demand_entities
   demand_threshold: !input demand_threshold
+  demand_margin: !input demand_margin
 
   v_heating_on: >
     {{ heating_entities | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count > 0 }}
@@ -192,7 +222,6 @@ variables:
   v_demand: >
     {% set v = states(demand_entities | first) if demand_entities | count > 0 else 'none' %}
     {{ v | float if is_number(v) else 'none' }}
-  v_sun_surplus: "{{ is_number(v_demand) and v_demand | float < demand_threshold | float }}"
 
   # Huidige verschuiving: van de eerste zone die op basis + een geldige stap staat.
   v_current_offset: >
@@ -208,6 +237,13 @@ variables:
       {% endif %}
     {% endfor %}
     {{ ns.off if ns.off is not none else 0 }}
+
+  # Zonne-overschot met hysterese: tijdens bufferen pas stoppen onder drempel
+  # min marge, anders pas weer bufferen boven drempel plus marge.
+  v_sun_surplus: >
+    {% if not is_number(v_demand) %}false
+    {% elif v_current_offset | float > 0 %}{{ v_demand | float < demand_threshold | float - demand_margin | float }}
+    {% else %}{{ v_demand | float < demand_threshold | float + demand_margin | float }}{% endif %}
 
   v_target_offset: >
     {% set st = step | float %}
