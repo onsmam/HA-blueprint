@@ -1,0 +1,281 @@
+# Version: 1.0.0
+blueprint:
+  domain: automation
+  name: "🔥 Warmtepomp - stooklijn (DAO + binnentemperatuur)"
+  description: >
+    Schrijft de stooklijncorrectie naar de warmtepomp: de prijsaanpassing van
+    de Day Ahead Optimizer (DAO) plus een compensatie op de binnentemperatuur.
+    De compensatie werkt alleen buiten een comfortband, zodat de DAO binnen de
+    band vrij kan voorstoken of uitstellen. De band ligt rond het actuele
+    setpoint van een referentiethermostaat; verhoogt de blueprint
+    'Thermostaten - bufferen met Day Ahead Optimizer' dat setpoint in een
+    goedkoop uur, dan schuift de band mee en helpt de compensatie de vloer
+    opladen in plaats van het tegen te werken. Zonder referentiethermostaat
+    geldt een vaste band. Er wordt alleen geschreven als de waarde verandert,
+    afgerond op de stap van de doel-entiteit en begrensd op het minimum en
+    maximum ervan. Staat de verwarming uit, dan gaan de correctie en de
+    helpers terug naar 0. Vervangt een losse compensatie- en schrijfautomation. De
+    variabele v_reason in de trace toont de opbouw van de correctie.
+
+  input:
+    adjustment_entity:
+      name: "💶 Stooklijnaanpassing van de DAO"
+      description: >
+        De entiteit waarin de DAO de stooklijnaanpassing schrijft
+        ('entity adjust heating curve'), in K.
+      default: input_number.stooklijn_aanpassing
+      selector:
+        entity:
+          filter:
+            - domain: [input_number, number, sensor]
+
+    target_entity:
+      name: "🎯 Stooklijncorrectie warmtepomp"
+      description: Number-entiteit van de warmtepomp waarin de correctie wordt geschreven.
+      default: number.luxtronik_281211_0164_heating_target_correction
+      selector:
+        entity:
+          filter:
+            - domain: [number, input_number]
+
+    heating_entities:
+      name: "🔥 Verwarming vrijgegeven"
+      description: >
+        Schakelaar of select die aangeeft dat de verwarming vrijgegeven is.
+        Elke status behalve off/unavailable/unknown telt als vrijgegeven.
+        Staat de verwarming uit, dan gaan de correctie en de helpers naar 0.
+      default:
+        - switch.luxtronik_281211_0164_heating
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: [switch, select, input_select, input_boolean, binary_sensor]
+
+    temperature_entity:
+      name: "🌡️ Binnentemperatuur"
+      description: Temperatuursensor waarop gecompenseerd wordt.
+      default: sensor.woonkamer_temperatuur
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+
+    reference_thermostat:
+      name: "🌡️ Referentiethermostaat (optioneel)"
+      description: >
+        Thermostaat van dezelfde ruimte. De comfortband ligt dan rond zijn
+        actuele setpoint (van 'onder setpoint' tot 'boven setpoint') en schuift
+        mee met het bufferen. Leeg laten: vaste band hieronder.
+      default:
+        - climate.woonkamer
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: climate
+
+    band_below:
+      name: "Band: onder setpoint"
+      description: Onder setpoint min deze waarde wordt de stooklijn verhoogd.
+      default: 0.2
+      selector:
+        number:
+          min: 0
+          max: 2
+          step: 0.1
+          unit_of_measurement: "°C"
+          mode: slider
+
+    band_above:
+      name: "Band: boven setpoint"
+      description: Boven setpoint plus deze waarde wordt de stooklijn verlaagd.
+      default: 0.8
+      selector:
+        number:
+          min: 0
+          max: 2
+          step: 0.1
+          unit_of_measurement: "°C"
+          mode: slider
+
+    band_low:
+      name: "Vaste band: ondergrens"
+      description: Alleen zonder referentiethermostaat.
+      default: 20.8
+      selector:
+        number:
+          min: 15
+          max: 25
+          step: 0.1
+          unit_of_measurement: "°C"
+          mode: slider
+
+    band_high:
+      name: "Vaste band: bovengrens"
+      description: Alleen zonder referentiethermostaat.
+      default: 22.0
+      selector:
+        number:
+          min: 15
+          max: 25
+          step: 0.1
+          unit_of_measurement: "°C"
+          mode: slider
+
+    max_compensation:
+      name: "Maximale compensatie"
+      default: 0.7
+      selector:
+        number:
+          min: 0
+          max: 3
+          step: 0.1
+          unit_of_measurement: "K"
+          mode: slider
+
+    compensation_helper:
+      name: "Helper compensatie (optioneel)"
+      description: input_number die de compensatie bijhoudt, voor dashboard en historie.
+      default:
+        - input_number.stooklijn_compensatie
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: input_number
+
+    total_helper:
+      name: "Helper totaal (optioneel)"
+      description: input_number die de geschreven correctie bijhoudt, voor dashboard en historie.
+      default:
+        - input_number.stooklijn_totaal
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: input_number
+
+mode: queued
+max: 3
+max_exceeded: silent
+
+trigger_variables:
+  tv_heating: !input heating_entities
+
+trigger:
+  - platform: state
+    entity_id: !input adjustment_entity
+    id: dao
+  - platform: template
+    id: heating
+    value_template: >
+      {{ tv_heating | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count > 0 }}
+  - platform: template
+    id: heating
+    value_template: >
+      {{ tv_heating | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count == 0 }}
+  # Vloerverwarming reageert in uren; elk kwartier bijsturen is genoeg. Een
+  # verschoven setpoint van de referentiethermostaat wordt zo ook opgepakt.
+  - platform: time_pattern
+    minutes: "/15"
+    id: interval
+  - platform: homeassistant
+    event: start
+    id: start
+
+variables:
+  adjustment_entity: !input adjustment_entity
+  target_entity: !input target_entity
+  heating_entities: !input heating_entities
+  temperature_entity: !input temperature_entity
+  reference_thermostat: !input reference_thermostat
+  band_below: !input band_below
+  band_above: !input band_above
+  band_low: !input band_low
+  band_high: !input band_high
+  max_compensation: !input max_compensation
+  compensation_helper: !input compensation_helper
+  total_helper: !input total_helper
+
+  v_heating_on: >
+    {{ heating_entities | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count > 0 }}
+  v_adjustment: >
+    {% set a = states(adjustment_entity) %}
+    {{ a | float if is_number(a) else 0 }}
+  v_temperature: >
+    {% set t = states(temperature_entity) %}
+    {{ t | float if is_number(t) else 'none' }}
+  v_setpoint: >
+    {% set s = state_attr(reference_thermostat | first, 'temperature') if reference_thermostat | count > 0 else none %}
+    {{ s | float if is_number(s) else 'none' }}
+  v_band_low: >
+    {{ (v_setpoint | float - band_below | float) | round(2) if is_number(v_setpoint) else band_low | float }}
+  v_band_high: >
+    {{ (v_setpoint | float + band_above | float) | round(2) if is_number(v_setpoint) else band_high | float }}
+  v_compensation: >
+    {% if not v_heating_on | bool or not is_number(v_temperature) %}0
+    {% elif v_temperature | float < v_band_low | float %}
+      {{ [v_band_low | float - v_temperature | float, max_compensation | float] | min | round(1) }}
+    {% elif v_temperature | float > v_band_high | float %}
+      {{ [v_band_high | float - v_temperature | float, -(max_compensation | float)] | max | round(1) }}
+    {% else %}0{% endif %}
+  v_total: >
+    {% set stap = state_attr(target_entity, 'step') | float(0.1) %}
+    {% set v = v_adjustment | float + v_compensation | float if v_heating_on | bool else 0 %}
+    {% set v = [[v, state_attr(target_entity, 'min') | float(-5)] | max, state_attr(target_entity, 'max') | float(5)] | min %}
+    {{ ((v / stap) | round(0) * stap) | round(1) }}
+  v_write: >
+    {{ is_number(states(target_entity))
+       and (states(target_entity) | float - v_total | float) | abs >= 0.05 }}
+
+  v_reason: >
+    {% if not v_heating_on | bool %}verwarming uit -> correctie 0{{ ' -> geschreven' if v_write | bool else ' (stond al op 0)' }}
+    {% else %}
+      {% set band = 'band ' ~ v_band_low ~ '-' ~ v_band_high ~ ' °C'
+           ~ (' (setpoint ' ~ v_setpoint ~ ')' if is_number(v_setpoint) else ' (vast)') %}
+      {% set temp = ('binnen ' ~ v_temperature ~ ' °C') if is_number(v_temperature) else 'binnentemperatuur onbekend' %}
+      {{ 'DAO ' ~ v_adjustment ~ ' + compensatie ' ~ v_compensation ~ ' (' ~ temp ~ ', ' ~ band ~ ') = '
+         ~ v_total ~ (' -> geschreven' if v_write | bool else ' -> ongewijzigd') }}
+    {% endif %}
+
+action:
+  - if:
+      - condition: template
+        alias: "Warmtepomp bereikbaar"
+        value_template: "{{ is_number(states(target_entity)) }}"
+    then:
+      - if:
+          - condition: template
+            alias: "Compensatie-helper ingesteld en gewijzigd"
+            value_template: >
+              {{ compensation_helper | count > 0
+                 and states(compensation_helper | first) | float(99) != v_compensation | float }}
+        then:
+          - service: input_number.set_value
+            target:
+              entity_id: "{{ compensation_helper | first }}"
+            data:
+              value: "{{ v_compensation }}"
+      - if:
+          - condition: template
+            alias: "Totaal-helper ingesteld en gewijzigd"
+            value_template: >
+              {{ total_helper | count > 0
+                 and states(total_helper | first) | float(99) != v_total | float }}
+        then:
+          - service: input_number.set_value
+            target:
+              entity_id: "{{ total_helper | first }}"
+            data:
+              value: "{{ v_total }}"
+      - if:
+          - condition: template
+            alias: "Correctie warmtepomp moet wijzigen"
+            value_template: "{{ v_write | bool }}"
+        then:
+          - service: "{{ target_entity.split('.')[0] }}.set_value"
+            target:
+              entity_id: !input target_entity
+            data:
+              value: "{{ v_total }}"

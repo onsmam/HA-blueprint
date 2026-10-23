@@ -1,0 +1,297 @@
+# Version: 1.1.0
+blueprint:
+  domain: automation
+  name: "🌡️ Thermostaten - bufferen met Day Ahead Optimizer"
+  description: >
+    Laat de ruimtethermostaten meebewegen met de stooklijnaanpassing van de Day
+    Ahead Optimizer (DAO). In goedkope uren verhoogt de DAO de stooklijn om
+    warmte in de vloer op te slaan; zonder deze automation sluiten de kleppen
+    zodra een zone zijn vaste setpoint haalt en komt die extra warmte de vloer
+    niet in. Deze automation verhoogt dan tijdelijk de setpoints (bufferen) en
+    verlaagt ze iets in dure uren (op de buffer teren). Het verschil met het
+    basissetpoint is DAO-aanpassing x factor, begrensd en afgerond op hele
+    stappen, met hysterese zodat de kleppen niet elk kwartier een nieuwe
+    instelling krijgen. Levert de zon meer dan het huis verliest, dan wordt
+    niet extra gebufferd. Staat de verwarming uit, dan gaan alle zones terug
+    naar hun basissetpoint. Een zone waarvan het setpoint met de hand op een
+    andere waarde is gezet (niet basis + een geldige stap) blijft ongemoeid.
+    De variabele v_reason in de trace toont de gekozen verschuiving.
+    Hoort bij de blueprint 'Warmtepomp - stooklijn (DAO + binnentemperatuur)',
+    die de comfortband laat meeschuiven met het setpoint van de
+    referentiethermostaat.
+
+  input:
+    zones:
+      name: "🏠 Zones en basissetpoint"
+      description: >
+        Per thermostaat het vaste setpoint (°C) waar de verschuiving bovenop
+        komt. Formaat: entity_id: temperatuur, één per regel.
+      default:
+        climate.hal: 19
+        climate.keuken: 21
+        climate.woonkamer: 21
+        climate.badkamer: 21
+      selector:
+        object: {}
+
+    adjustment_entity:
+      name: "💶 Stooklijnaanpassing van de DAO"
+      description: >
+        De entiteit waarin de DAO de stooklijnaanpassing schrijft
+        ('entity adjust heating curve'), in K. Positief = goedkoop (bufferen),
+        negatief = duur.
+      default: input_number.stooklijn_aanpassing
+      selector:
+        entity:
+          filter:
+            - domain: [input_number, number, sensor]
+
+    heating_entities:
+      name: "🔥 Verwarming vrijgegeven"
+      description: >
+        Schakelaar of select die aangeeft dat de verwarming vrijgegeven is.
+        Elke status behalve off/unavailable/unknown telt als vrijgegeven.
+        Staat de verwarming uit, dan gaan de zones terug naar hun basis.
+      default:
+        - switch.luxtronik_281211_0164_heating
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: [switch, select, input_select, input_boolean, binary_sensor]
+
+    factor:
+      name: "Factor"
+      description: >
+        Graden setpoint per graad stooklijnaanpassing. Bij 1,0 en een DAO-
+        aanpassing van +0,8 K gaat het setpoint +1,0 (afgerond op de stap).
+      default: 1.0
+      selector:
+        number:
+          min: 0.1
+          max: 3
+          step: 0.1
+          mode: slider
+
+    max_up:
+      name: "Maximaal omhoog"
+      default: 1.0
+      selector:
+        number:
+          min: 0
+          max: 3
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: slider
+
+    max_down:
+      name: "Maximaal omlaag"
+      default: 0.5
+      selector:
+        number:
+          min: 0
+          max: 3
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: slider
+
+    step:
+      name: "Stap"
+      description: >
+        Setpoints worden op deze stap afgerond. Een nieuwe verschuiving wordt
+        pas doorgevoerd als de berekende waarde minstens 3/4 stap van de
+        huidige afwijkt (hysterese).
+      default: 0.5
+      selector:
+        number:
+          min: 0.1
+          max: 1
+          step: 0.1
+          unit_of_measurement: "°C"
+          mode: slider
+
+    demand_entities:
+      name: "☀️ Actuele warmtevraag (optioneel)"
+      description: >
+        Sensor met de actuele warmtevraag in kW, zoals
+        sensor.warmtevraag_actueel uit het package warmtevraag_voorspelling.yaml.
+        Ligt die onder de drempel hieronder (de zon levert meer dan het huis
+        verliest), dan wordt er niet extra gebufferd; verlagen in dure uren
+        blijft mogelijk. Leeg laten om dit uit te schakelen.
+      default:
+        - sensor.warmtevraag_actueel
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: sensor
+
+    demand_threshold:
+      name: "Drempel warmtevraag"
+      default: 0
+      selector:
+        number:
+          min: -5
+          max: 5
+          step: 0.1
+          unit_of_measurement: "kW"
+          mode: slider
+
+    demand_margin:
+      name: "Marge rond de drempel"
+      description: >
+        Hysterese voor de zonregel: wordt er gebufferd, dan stopt dat pas als
+        de warmtevraag onder drempel min marge komt; wordt er niet gebufferd,
+        dan begint het pas weer boven drempel plus marge. Voorkomt op en neer
+        schakelen bij wisselende bewolking.
+      default: 0.3
+      selector:
+        number:
+          min: 0
+          max: 2
+          step: 0.1
+          unit_of_measurement: "kW"
+          mode: slider
+
+    demand_delay:
+      name: "Vertraging zonregel"
+      description: Zo lang moet de warmtevraag buiten de marge blijven voordat de zon de setpoints verandert.
+      default:
+        hours: 0
+        minutes: 15
+        seconds: 0
+      selector:
+        duration: {}
+
+# Alleen de laatste run telt; snel opeenvolgende triggers geven zo geen heen en
+# weer gezette setpoints.
+mode: restart
+
+trigger_variables:
+  tv_demand: !input demand_entities
+  tv_demand_threshold: !input demand_threshold
+  tv_demand_margin: !input demand_margin
+  tv_heating: !input heating_entities
+
+trigger:
+  - platform: state
+    entity_id: !input adjustment_entity
+    id: dao
+  - platform: template
+    id: heating
+    value_template: >
+      {{ tv_heating | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count > 0 }}
+  - platform: template
+    id: heating
+    value_template: >
+      {{ tv_heating | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count == 0 }}
+  # Zon gaat duidelijk en blijvend over de drempel: bufferen stoppen of hervatten.
+  - platform: template
+    id: sun
+    for: !input demand_delay
+    value_template: >
+      {% set v = states(tv_demand | first) if tv_demand | count > 0 else 'none' %}
+      {{ is_number(v) and v | float < tv_demand_threshold | float - tv_demand_margin | float }}
+  - platform: template
+    id: sun
+    for: !input demand_delay
+    value_template: >
+      {% set v = states(tv_demand | first) if tv_demand | count > 0 else 'none' %}
+      {{ is_number(v) and v | float > tv_demand_threshold | float + tv_demand_margin | float }}
+  - platform: homeassistant
+    event: start
+    id: start
+
+variables:
+  zones: !input zones
+  adjustment_entity: !input adjustment_entity
+  heating_entities: !input heating_entities
+  factor: !input factor
+  max_up: !input max_up
+  max_down: !input max_down
+  step: !input step
+  demand_entities: !input demand_entities
+  demand_threshold: !input demand_threshold
+  demand_margin: !input demand_margin
+
+  v_heating_on: >
+    {{ heating_entities | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count > 0 }}
+  v_adjustment: >
+    {% set a = states(adjustment_entity) %}
+    {{ a | float if is_number(a) else 0 }}
+  v_demand: >
+    {% set v = states(demand_entities | first) if demand_entities | count > 0 else 'none' %}
+    {{ v | float if is_number(v) else 'none' }}
+
+  # Huidige verschuiving: van de eerste zone die op basis + een geldige stap staat.
+  v_current_offset: >
+    {% set ns = namespace(off=none) %}
+    {% for e, base in zones.items() %}
+      {% set c = state_attr(e, 'temperature') %}
+      {% if ns.off is none and is_number(c) %}
+        {% set d = c | float - base | float %}
+        {% set k = (d / step | float) | round(0) %}
+        {% if (d - k * step | float) | abs < 0.01 and d <= max_up | float + 0.01 and d >= -(max_down | float) - 0.01 %}
+          {% set ns.off = k * step | float %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.off if ns.off is not none else 0 }}
+
+  # Zonne-overschot met hysterese: tijdens bufferen pas stoppen onder drempel
+  # min marge, anders pas weer bufferen boven drempel plus marge.
+  v_sun_surplus: >
+    {% if not is_number(v_demand) %}false
+    {% elif v_current_offset | float > 0 %}{{ v_demand | float < demand_threshold | float - demand_margin | float }}
+    {% else %}{{ v_demand | float < demand_threshold | float + demand_margin | float }}{% endif %}
+
+  v_target_offset: >
+    {% set st = step | float %}
+    {% set raw = v_adjustment | float * factor | float if v_heating_on | bool else 0 %}
+    {% if v_sun_surplus | bool %}{% set raw = [raw, 0] | min %}{% endif %}
+    {% set raw = [[raw, max_up | float] | min, -(max_down | float)] | max %}
+    {% set cur = v_current_offset | float %}
+    {% if v_heating_on | bool and (raw - cur) | abs < 0.75 * st %}
+      {{ cur }}
+    {% else %}
+      {{ ((raw / st) | round(0) * st) | round(2) }}
+    {% endif %}
+
+  # Per zone: doel, huidig setpoint, handmatig aangepast, moet wijzigen.
+  v_plan: >
+    {% set ns = namespace(items=[]) %}
+    {% for e, base in zones.items() %}
+      {% set c = state_attr(e, 'temperature') %}
+      {% set target = (base | float + v_target_offset | float) | round(1) %}
+      {% set manual = false %}
+      {% if is_number(c) %}
+        {% set d = c | float - base | float %}
+        {% set k = (d / step | float) | round(0) %}
+        {% set manual = (d - k * step | float) | abs >= 0.01 or d > max_up | float + 0.01 or d < -(max_down | float) - 0.01 %}
+      {% endif %}
+      {% set ns.items = ns.items + [{
+           'entity': e, 'base': base | float, 'target': target,
+           'current': c if is_number(c) else none, 'manual': manual,
+           'change': is_number(c) and not manual and (c | float - target) | abs >= 0.05 }] %}
+    {% endfor %}
+    {{ ns.items }}
+
+  v_reason: >
+    {% set why = 'verwarming uit -> basis' if not v_heating_on | bool
+       else 'DAO-aanpassing ' ~ (v_adjustment | float | round(2)) ~ ' K x ' ~ factor
+            ~ (' (zonne-overschot: niet omhoog)' if v_sun_surplus | bool else '') %}
+    {% set manual = v_plan | selectattr('manual') | map(attribute='entity') | list %}
+    {{ why ~ ' -> verschuiving ' ~ v_target_offset ~ ' °C'
+       ~ ((', handmatig ongemoeid: ' ~ manual | join(', ')) if manual | count > 0 else '')
+       ~ (', ' ~ (v_plan | selectattr('change') | list | count) ~ ' zone(s) aangepast') }}
+
+action:
+  - repeat:
+      for_each: "{{ v_plan | selectattr('change') | list }}"
+      sequence:
+        - service: climate.set_temperature
+          continue_on_error: true
+          target:
+            entity_id: "{{ repeat.item.entity }}"
+          data:
+            temperature: "{{ repeat.item.target }}"
