@@ -1,4 +1,4 @@
-# Version: 1.10.0
+# Version: 1.11.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Rekent uit hoe lang de warmte die het huis boven de minimumtemperatuur heeft
@@ -13,9 +13,10 @@
 #   bewust niet mee: die komt alleen binnen als de screens open blijven.
 #
 # sensor.dao_graaddagenfactor: degree_days_factor voor de Day Ahead Optimizer.
-# De DAO rekent nog nodig = factor x gewogen graaddagen vandaag - vandaag al
-# geproduceerde warmte; de factor is zo gekozen dat dat gelijk is aan onze
-# verwachte warmtevraag van nu tot middernacht (met verwachte zon). Zet in de
+# De DAO rekent nog nodig = factor x gewogen graaddagen van zijn
+# planningsperiode (vandaag, na publicatie van de prijzen ook morgen) - vandaag
+# al geproduceerde warmte; de factor is zo gekozen dat dat gelijk is aan onze
+# verwachte warmtevraag voor de rest van die periode (met verwachte zon). Zet in de
 # DAO-config "degree_days_factor": "sensor.dao_graaddagenfactor".
 # DAO_GEPRODUCEERD moet dezelfde sensor zijn als entity_heat_produced in de DAO.
 # DAO_KALIBRATIE schaalt de restvraag als de DAO structureel te veel of te
@@ -97,6 +98,7 @@ template:
             {% set DAO_KALIBRATIE = 1.0 %}
             {% set DAO_MIN = 0 %}
             {% set DAO_GEPRODUCEERD = 'sensor.dag_opgewekte_warmte' %}
+            {% set DAO_MORGEN_VANAF = 13 %}
             {% set DAO_BUITEN_GEM = 'sensor.luxtronik_281211_0164_outdoor_temperature_average' %}
             {% set rooms = [
                  'climate.woonkamer', 'climate.keuken', 'climate.hal',
@@ -127,7 +129,8 @@ template:
               {% set tm = (t_in + T_MIN) / 2 %}
               {% set ns = namespace(t=t_in, uren=0 if buf <= 0 else none, uren0=0 if buf <= 0 else none,
                    cum=0, cum0=0, t24=t_in, buiten24=0, uv24=0, zon24=0, gd24=0, vraag24=0, vraag24_0=0,
-                   rest_n=0, rest_gd=0, rest_vraag=0, rest_vraag0=0) %}
+                   rest_n=0, rest_gd=0, rest_vraag=0, rest_vraag0=0,
+                   mor_n=0, mor_gd=0, mor_vraag=0, mor_vraag0=0) %}
               {% for f in fl %}
                 {% set uv = f.uv_index | float(0) if f.uv_index is defined else 0 %}
                 {% set zon = K_ZON * ZON_PER_UV * UV_WEGING.get(f.condition, 0.4) * uv %}
@@ -151,22 +154,31 @@ template:
                   {% set ns.vraag24 = ns.vraag24 + H * (T_MIN - f.temperature | float) - P_INT - zon %}
                   {% set ns.vraag24_0 = ns.vraag24_0 + H * (T_MIN - f.temperature | float) - P_INT %}
                 {% endif %}
-                {% if as_local(as_datetime(f.datetime)).date() == now().date() %}
+                {% set dag = as_local(as_datetime(f.datetime)).date() %}
+                {% if dag == now().date() %}
                   {% set ns.rest_n = ns.rest_n + 1 %}
                   {% set ns.rest_gd = ns.rest_gd + [DAO_REF - f.temperature | float, 0] | max / 24 %}
                   {% set ns.rest_vraag = ns.rest_vraag + H * (T_MIN - f.temperature | float) - P_INT - zon %}
                   {% set ns.rest_vraag0 = ns.rest_vraag0 + H * (T_MIN - f.temperature | float) - P_INT %}
+                {% elif dag == (now() + timedelta(days=1)).date() %}
+                  {% set ns.mor_n = ns.mor_n + 1 %}
+                  {% set ns.mor_gd = ns.mor_gd + [DAO_REF - f.temperature | float, 0] | max / 24 %}
+                  {% set ns.mor_vraag = ns.mor_vraag + H * (T_MIN - f.temperature | float) - P_INT - zon %}
+                  {% set ns.mor_vraag0 = ns.mor_vraag0 + H * (T_MIN - f.temperature | float) - P_INT %}
                 {% endif %}
               {% endfor %}
               {% set buiten24 = ns.buiten24 / ([fl | count, 24] | min) %}
-              {# Factor voor de Day Ahead Optimizer. De DAO rekent per
-                 kalenderdag: nog nodig = factor x gewogen graaddagen vandaag
-                 - vandaag al geproduceerde warmte. De factor is daarom
-                 (al geproduceerd + verwachte warmtevraag van nu tot middernacht,
-                 met verwachte zon) / gewogen graaddagen vandaag; dan komt de DAO
-                 uit op onze verwachte restvraag. Graaddagen t.o.v. DAO_REF; de
-                 uren die al voorbij zijn met het 24-uursgemiddelde buiten.
-                 Weging zoals KNMI: nov-feb 1,1, mrt/okt 1,0, apr-sep 0,8. #}
+              {# Factor voor de Day Ahead Optimizer. De DAO rekent over zijn
+                 planningsperiode: nog nodig = factor x gewogen graaddagen
+                 (vandaag, en zodra de prijzen van morgen bekend zijn ook
+                 morgen) - vandaag al geproduceerde warmte. De factor is daarom
+                 (al geproduceerd + verwachte warmtevraag van nu tot het einde
+                 van de periode, met verwachte zon) / gewogen graaddagen van de
+                 periode; dan komt de DAO uit op onze verwachte restvraag. Morgen
+                 telt mee vanaf DAO_MORGEN_VANAF uur (Tibber publiceert de
+                 prijzen van morgen rond 13:00). Graaddagen t.o.v. DAO_REF; de
+                 uren die vandaag al voorbij zijn met het 24-uursgemiddelde
+                 buiten. Weging zoals KNMI: nov-feb 1,1, mrt/okt 1,0, apr-sep 0,8. #}
               {% set m = now().month %}
               {% set weging = 1.1 if m in [11, 12, 1, 2] else 1.0 if m in [3, 10] else 0.8 %}
               {% set gdw = ns.gd24 * weging %}
@@ -177,8 +189,13 @@ template:
               {% set rest = [ns.rest_vraag, 0] | max %}
               {% set rest0 = [ns.rest_vraag0, 0] | max %}
               {% set basis = H * 24 * DAO_KALIBRATIE %}
-              {% set dao = ([[(geproduceerd + DAO_KALIBRATIE * rest) / gd_vandaag, DAO_MIN] | max, 12] | min) if gd_vandaag >= 0.2 else basis %}
-              {% set dao0 = ([[(geproduceerd + DAO_KALIBRATIE * rest0) / gd_vandaag, DAO_MIN] | max, 12] | min) if gd_vandaag >= 0.2 else basis %}
+              {% set met_morgen = now().hour >= DAO_MORGEN_VANAF and ns.mor_n >= 20 %}
+              {% set gd_morgen = ns.mor_gd * 24 / ns.mor_n * weging if met_morgen else 0 %}
+              {% set vraag_morgen = [ns.mor_vraag * 24 / ns.mor_n, 0] | max if met_morgen else 0 %}
+              {% set vraag_morgen0 = [ns.mor_vraag0 * 24 / ns.mor_n, 0] | max if met_morgen else 0 %}
+              {% set gd_periode = gd_vandaag + gd_morgen %}
+              {% set dao = ([[(geproduceerd + DAO_KALIBRATIE * (rest + vraag_morgen)) / gd_periode, DAO_MIN] | max, 12] | min) if gd_periode >= 0.2 else basis %}
+              {% set dao0 = ([[(geproduceerd + DAO_KALIBRATIE * (rest0 + vraag_morgen0)) / gd_periode, DAO_MIN] | max, 12] | min) if gd_periode >= 0.2 else basis %}
               {{ {
                    'ok': true,
                    'uren': (ns.uren | round(0) | int) if ns.uren is not none else fl | count,
@@ -195,7 +212,10 @@ template:
                    'geproduceerd_vandaag': geproduceerd | round(1),
                    'restvraag_vandaag': rest | round(1),
                    'restvraag_vandaag0': rest0 | round(1),
-                   'dao_nog_nodig': ([dao * gd_vandaag - geproduceerd, 0] | max) | round(1),
+                   'graaddagen_periode': gd_periode | round(2),
+                   'met_morgen': met_morgen,
+                   'vraag_morgen': vraag_morgen | round(1),
+                   'dao_nog_nodig': ([dao * gd_periode - geproduceerd, 0] | max) | round(1),
                    'weging': weging,
                    'uv_uren_24u': ns.uv24 | round(1),
                    'zonnewinst_24u_kwh': ns.zon24 | round(1),
@@ -235,6 +255,9 @@ template:
         attributes:
           factor_zonder_zon: "{{ wv.dao_factor0 }}"
           gewogen_graaddagen_vandaag: "{{ wv.graaddagen_vandaag }}"
+          gewogen_graaddagen_periode: "{{ wv.graaddagen_periode }}"
+          morgen_inbegrepen: "{{ wv.met_morgen }}"
+          vraag_morgen_kwh: "{{ wv.vraag_morgen }}"
           weging: "{{ wv.weging }}"
           vandaag_geproduceerd_kwh: "{{ wv.geproduceerd_vandaag }}"
           restvraag_vandaag_kwh: "{{ wv.restvraag_vandaag }}"
