@@ -1,12 +1,24 @@
-# Version: 1.4.0
+# Version: 1.13.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
-# Simuleert uur voor uur hoe het huis afkoelt zonder verwarming en zonder zon,
-# met de uurverwachting van de buitentemperatuur. Uitkomst: het aantal uren
-# tot het huis onder de minimumtemperatuur zakt. Ligt dat binnen de horizon,
-# dan is zonnewarmte die nu binnenkomt nuttig (buffer in vloer en muren) en
-# staat binary_sensor.zonnewarmte_nuttig aan. Die kan de warmtemodus van de
-# blueprint 'Zonwering multi-gevel' aansturen.
+# Rekent uit hoe lang de warmte die het huis boven de minimumtemperatuur heeft
+# (buffer) meegaat tegen het verwachte netto warmteverlies per uur, met de
+# uurverwachting van de buitentemperatuur. Twee varianten:
+# - sensor.uren_tot_warmtevraag: met de verwachte zon (UV-index); de
+#   realistische verwachting wanneer verwarming nodig is (stookseizoen).
+# - attribuut uren_zonder_zon: zonder zon. Ligt dat binnen de horizon, dan is
+#   zonnewarmte die nu binnenkomt nuttig (buffer in vloer en muren) en staat
+#   binary_sensor.zonnewarmte_nuttig aan. Die kan de warmtemodus van de
+#   blueprint 'Zonwering multi-gevel' aansturen. Hier telt de verwachte zon
+#   bewust niet mee: die komt alleen binnen als de screens open blijven.
+#
+# sensor.dao_graaddagenfactor: degree_days_factor voor de Day Ahead Optimizer:
+# verwachte warmtevraag (met verwachte zon) per gewogen graaddag t.o.v. 16
+# graden voor de kalenderdag. Eén keer per dag om 00:01 berekend en de hele dag
+# vastgehouden; de DAO trekt zelf de al geproduceerde warmte af. Zet in de DAO-config "degree_days_factor":
+# "sensor.dao_graaddagenfactor". DAO_KALIBRATIE schaalt de factor als de DAO
+# structureel te veel of te weinig warmte blijkt in te plannen; DAO_MIN is een
+# ondergrens.
 #
 # Daarnaast: sensor.warmteverlies_actueel (kW die het huis nu verliest) en
 # sensor.warmtevraag_actueel (dat verlies min interne warmte en gemeten
@@ -20,14 +32,31 @@
 #     packages: !include_dir_named packages
 # of kopieer het template:-blok naar configuration.yaml.
 #
-# Huismodel (afgeleid uit afkoelnachten met de warmtepomp uit):
+# Huismodel, gefit op 12-19 oktober met de warmtepomp uit. Die dagen bepalen
+# alleen de verhoudingen (afkoeltijd C/H ~235 uur); H komt uit de winterdata en
+# wordt herzien met de warmtemeter zodra de warmtepomp een tijd draait:
 #   H     warmteverlies in kW per graad verschil binnen-buiten
 #   P_INT interne warmte (apparaten, mensen) in kW
 #   C     warmtecapaciteit van het huis in kWh per graad
 #   T_MIN onder deze gemiddelde binnentemperatuur is verwarming nodig
-#   A_ZON effectief zonoppervlak in m2: zonnewinst in kW = A_ZON x gemeten
-#         straling in kW/m2 x deel dat de screens open staan (uit de
-#         winterfit: 3,43 kWh warmte per kWh/m2 instraling met open screens)
+#   Zonnewinst per gevel: de gemeten horizontale straling wordt gesplitst in
+#   direct en diffuus licht (Erbs) en omgerekend naar de straling op elke
+#   gevel, met de invalshoek van de zon. Zonnewinst in kW =
+#   K_ZON x (A_ZUID x straling zuidgevel x deel screens open
+#            + A_NOORD x straling noordgevel) / 1000.
+#   A_ZUID / A_NOORD  glasoppervlak x zontoetreding in m2, uit de
+#         bouwtekening: achtergevel 15,2 m2 kozijn, voorgevel 5,8 m2 kozijn,
+#         ~78% glas, HR++ (zontoetreding 0,6)
+#   K_ZON correctiefactor op de zonnewinst, gefit op hele etmalen 12-19
+#         oktober met de warmtepomp uit
+#   ZON_PER_UV  zonnewinst op de gevels in kW per UV-indexpunt (zonder K_ZON,
+#         screens open), gemeten met de Tempest in oktober (R2 0,96). In de
+#         winter is de UV-index relatief laag, dan rekent de voorspelling met
+#         te weinig zon (veilige kant).
+#   UV_WEGING  deel van de verwachte UV-index dat meetelt, per verwachte
+#         weersituatie; de weersverwachting schat de UV bij bewolking en regen
+#         te hoog. Gemiddeld over een gewone mix ~0,45, passend bij de ijking op
+#         12-19 oktober (de verwachting gaf ~2x zoveel UV-uren als gemeten).
 #   WTW_OFFSET  zijn alle kamerthermostaten onbeschikbaar, dan geldt de
 #         binnentemperatuur van de WTW plus deze correctie (die meet gemiddeld
 #         0,36 graad lager dan de kamers)
@@ -51,10 +80,21 @@ template:
       - variables:
           wv: >
             {% set H = 0.17 %}
-            {% set P_INT = 0.4 %}
-            {% set C = 27 %}
+            {% set P_INT = 0.24 %}
+            {% set C = 40 %}
+            {% set K_ZON = 2.0 %}
+            {% set ZON_PER_UV = 1.86 %}
+            {% set UV_WEGING = {
+                 'sunny': 0.8, 'clear-night': 0, 'partlycloudy': 0.5,
+                 'cloudy': 0.3, 'fog': 0.2, 'rainy': 0.2, 'pouring': 0.1,
+                 'lightning': 0.3, 'lightning-rainy': 0.2, 'hail': 0.1,
+                 'snowy': 0.2, 'snowy-rainy': 0.2, 'windy': 0.5,
+                 'windy-variant': 0.4, 'exceptional': 0.3} %}
             {% set T_MIN = 21 %}
             {% set WTW_OFFSET = 0.36 %}
+            {% set DAO_REF = 16 %}
+            {% set DAO_KALIBRATIE = 1.0 %}
+            {% set DAO_MIN = 0 %}
             {% set rooms = [
                  'climate.woonkamer', 'climate.keuken', 'climate.hal',
                  'climate.badkamer', 'climate.masterbedroom', 'climate.sophie',
@@ -70,27 +110,76 @@ template:
             {% if t_in is none or fl | count == 0 %}
               {{ {'ok': false} }}
             {% else %}
-              {% set ns = namespace(t=t_in, uren=none, t24=t_in, buiten24=0) %}
+              {# Uren tot warmtevraag: hoe lang de warmte boven T_MIN (buffer)
+                 meegaat tegen het verwachte netto verlies per uur. Uren met
+                 zonne-overschot tellen als nul in plaats van de buffer aan te
+                 vullen; zo loopt het verbruik alleen op en springt de uitkomst
+                 niet tussen "bijna" en "nooit" als het huis rond T_MIN in
+                 balans is. Klopt de verwachting, dan telt de sensor ~1 per
+                 uur af (de verwachte zon zit al in het getal); hij loopt pas
+                 op als de binnentemperatuur meer stijgt dan verwacht, door
+                 extra zon of door de warmtepomp.
+                 uren: met verwachte zon; uren0: zonder zon. #}
+              {% set buf = C * (t_in - T_MIN) %}
+              {% set tm = (t_in + T_MIN) / 2 %}
+              {% set ns = namespace(t=t_in, uren=0 if buf <= 0 else none, uren0=0 if buf <= 0 else none,
+                   cum=0, cum0=0, t24=t_in, buiten24=0, uv24=0, zon24=0, gd24=0, vraag24=0, vraag24_0=0, n24=0) %}
               {% for f in fl %}
-                {% set ns.t = ns.t - (H * (ns.t - f.temperature | float) - P_INT) / C %}
-                {% if ns.uren is none and ns.t < T_MIN %}
-                  {% set ns.uren = loop.index %}
+                {% set uv = f.uv_index | float(0) if f.uv_index is defined else 0 %}
+                {% set zon = K_ZON * ZON_PER_UV * UV_WEGING.get(f.condition, 0.4) * uv %}
+                {% set ns.t = ns.t - (H * (ns.t - f.temperature | float) - P_INT - zon) / C %}
+                {% set d0 = [H * (tm - f.temperature | float) - P_INT, 0] | max %}
+                {% set d = [d0 - zon, 0] | max %}
+                {% if ns.uren is none and ns.cum + d >= buf %}
+                  {% set ns.uren = loop.index0 + (buf - ns.cum) / d %}
                 {% endif %}
+                {% if ns.uren0 is none and ns.cum0 + d0 >= buf %}
+                  {% set ns.uren0 = loop.index0 + (buf - ns.cum0) / d0 %}
+                {% endif %}
+                {% set ns.cum = ns.cum + d %}
+                {% set ns.cum0 = ns.cum0 + d0 %}
                 {% if loop.index <= 24 %}
                   {% set ns.buiten24 = ns.buiten24 + f.temperature | float %}
+                  {% set ns.uv24 = ns.uv24 + uv %}
+                  {% set ns.zon24 = ns.zon24 + zon %}
                   {% set ns.t24 = ns.t %}
+                  {% set ns.gd24 = ns.gd24 + [DAO_REF - f.temperature | float, 0] | max / 24 %}
+                  {% set ns.vraag24 = ns.vraag24 + H * (T_MIN - f.temperature | float) - P_INT - zon %}
+                  {% set ns.vraag24_0 = ns.vraag24_0 + H * (T_MIN - f.temperature | float) - P_INT %}
+                  {% set ns.n24 = ns.n24 + 1 %}
                 {% endif %}
               {% endfor %}
               {% set buiten24 = ns.buiten24 / ([fl | count, 24] | min) %}
+              {# Factor voor de Day Ahead Optimizer over de komende 24 uur:
+                 verwachte warmtevraag (met verwachte zon) per gewogen graaddag
+                 t.o.v. DAO_REF. Weging zoals KNMI: nov-feb 1,1, mrt/okt 1,0,
+                 apr-sep 0,8. sensor.dao_graaddagenfactor neemt deze waarde om
+                 middernacht over (dan is het de kalenderdag) en houdt hem de hele
+                 dag vast; de DAO trekt zelf de al geproduceerde warmte af. #}
+              {% set m = now().month %}
+              {% set weging = 1.1 if m in [11, 12, 1, 2] else 1.0 if m in [3, 10] else 0.8 %}
+              {% set gd24w = ns.gd24 * 24 / [ns.n24, 1] | max * weging %}
+              {% set vraag24 = ns.vraag24 * 24 / [ns.n24, 1] | max %}
+              {% set vraag24_0 = ns.vraag24_0 * 24 / [ns.n24, 1] | max %}
+              {% set basis = H * 24 * DAO_KALIBRATIE %}
+              {% set dao = ([[DAO_KALIBRATIE * [vraag24, 0] | max / gd24w, DAO_MIN] | max, 12] | min) if gd24w >= 0.2 else basis %}
+              {% set dao0 = ([[DAO_KALIBRATIE * [vraag24_0, 0] | max / gd24w, DAO_MIN] | max, 12] | min) if gd24w >= 0.2 else basis %}
               {{ {
                    'ok': true,
-                   'uren': ns.uren if ns.uren is not none else fl | count,
+                   'uren': (ns.uren | round(0) | int) if ns.uren is not none else fl | count,
                    'bereikt': ns.uren is not none,
+                   'uren0': (ns.uren0 | round(0) | int) if ns.uren0 is not none else fl | count,
                    'binnen_nu': t_in | round(1),
                    'binnenbron': bron,
                    'binnen_over_24u': ns.t24 | round(1),
                    'buiten_gem_24u': buiten24 | round(1),
-                   'warmtevraag_24u_kwh': ([(H * (T_MIN - buiten24) - P_INT) * 24, 0] | max) | round(1),
+                   'warmtevraag_24u_kwh': ([ns.vraag24, 0] | max) | round(1),
+                   'dao_factor': dao | round(2),
+                   'dao_factor0': dao0 | round(2),
+                   'graaddagen_24u': gd24w | round(2),
+                   'weging': weging,
+                   'uv_uren_24u': ns.uv24 | round(1),
+                   'zonnewinst_24u_kwh': ns.zon24 | round(1),
                    'buffer_kwh': (C * (t_in - T_MIN)) | round(1),
                    'verwachting_uren': fl | count
                  } }}
@@ -104,6 +193,7 @@ template:
         state: "{{ wv.uren }}"
         attributes:
           bereikt_binnen_verwachting: "{{ wv.bereikt }}"
+          uren_zonder_zon: "{{ wv.uren0 }}"
           binnentemperatuur_nu: "{{ wv.binnen_nu }}"
           binnentemperatuur_bron: "{{ wv.binnenbron }}"
           binnentemperatuur_over_24u: "{{ wv.binnen_over_24u }}"
@@ -111,21 +201,76 @@ template:
           warmtevraag_24u_kwh: "{{ wv.warmtevraag_24u_kwh }}"
           buffer_boven_minimum_kwh: "{{ wv.buffer_kwh }}"
           lengte_verwachting_uren: "{{ wv.verwachting_uren }}"
+          uv_uren_24u: "{{ wv.uv_uren_24u }}"
+          zonnewinst_24u_kwh: "{{ wv.zonnewinst_24u_kwh }}"
+          dao_factor_24u: "{{ wv.dao_factor }}"
+          dao_factor_24u_zonder_zon: "{{ wv.dao_factor0 }}"
+          gewogen_graaddagen_24u: "{{ wv.graaddagen_24u }}"
+          graaddagen_weging: "{{ wv.weging }}"
+
+  # Voor de Day Ahead Optimizer: degree_days_factor als sensor. Eén keer per dag,
+  # om 00:01, wordt de 24-uursfactor van de voorspelling overgenomen (die is om
+  # 00:00 berekend, dus voor de kalenderdag waarop de DAO zijn graaddagen en
+  # warmtevraag reset) en de rest van de dag vastgehouden. Na een herstart blijft
+  # de waarde behouden; alleen als er nog geen waarde is, wordt hij direct gevuld.
+  - trigger:
+      - trigger: time
+        at: "00:01:00"
+        id: middernacht
+      - trigger: state
+        entity_id: sensor.uren_tot_warmtevraag
+        attribute: dao_factor_24u
+        id: eerste_waarde
+    sensor:
+      - name: DAO graaddagenfactor
+        unique_id: dao_graaddagenfactor
+        unit_of_measurement: "kWh/Kd"
+        state_class: measurement
+        icon: mdi:calculator-variant-outline
+        state: >
+          {% set nieuw = state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u') %}
+          {% if is_number(nieuw) and (trigger.id == 'middernacht' or not is_number(this.state)) %}
+            {{ nieuw }}
+          {% else %}
+            {{ this.state }}
+          {% endif %}
+        attributes:
+          berekend_op: >
+            {% set nieuw = state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u') %}
+            {{ now().isoformat() if is_number(nieuw) and (trigger.id == 'middernacht' or not is_number(this.state))
+               else this.attributes.get('berekend_op') }}
+          factor_zonder_zon: >
+            {% set nieuw = state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u') %}
+            {{ state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u_zonder_zon')
+               if is_number(nieuw) and (trigger.id == 'middernacht' or not is_number(this.state))
+               else this.attributes.get('factor_zonder_zon') }}
+          gewogen_graaddagen: >
+            {% set nieuw = state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u') %}
+            {{ state_attr('sensor.uren_tot_warmtevraag', 'gewogen_graaddagen_24u')
+               if is_number(nieuw) and (trigger.id == 'middernacht' or not is_number(this.state))
+               else this.attributes.get('gewogen_graaddagen') }}
+          warmtevraag_kwh: >
+            {% set nieuw = state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u') %}
+            {{ state_attr('sensor.uren_tot_warmtevraag', 'warmtevraag_24u_kwh')
+               if is_number(nieuw) and (trigger.id == 'middernacht' or not is_number(this.state))
+               else this.attributes.get('warmtevraag_kwh') }}
 
   - binary_sensor:
-      # Aan als het huis zonder verwarming binnen HORIZON uur onder de
-      # minimumtemperatuur zakt. Pas uit bij 6 uur boven de horizon, zodat een
-      # kleine wijziging in de verwachting de screens niet laat pendelen.
+      # Aan als het huis zonder verwarming en zonder zon binnen HORIZON uur
+      # onder de minimumtemperatuur zakt. Pas uit bij 6 uur boven de horizon,
+      # zodat een kleine wijziging in de verwachting de screens niet laat
+      # pendelen.
       - name: Zonnewarmte nuttig
         unique_id: zonnewarmte_nuttig
         icon: mdi:sun-thermometer-outline
-        availability: "{{ is_number(states('sensor.uren_tot_warmtevraag')) }}"
+        availability: "{{ is_number(state_attr('sensor.uren_tot_warmtevraag', 'uren_zonder_zon')) }}"
         state: >
           {% set HORIZON = 48 %}
-          {% set h = states('sensor.uren_tot_warmtevraag') | float(999) %}
+          {% set h = state_attr('sensor.uren_tot_warmtevraag', 'uren_zonder_zon') | float(999) %}
           {{ h <= (HORIZON + 6 if this.state == 'on' else HORIZON) }}
         attributes:
-          uren_tot_warmtevraag: "{{ states('sensor.uren_tot_warmtevraag') }}"
+          # Uren zonder zon; de zonwering-blueprint toont dit in de trace.
+          uren_tot_warmtevraag: "{{ state_attr('sensor.uren_tot_warmtevraag', 'uren_zonder_zon') }}"
 
   # Actueel warmteverlies en warmtevraag met hetzelfde huismodel (houd H en
   # P_INT gelijk aan de voorspelling hierboven).
@@ -157,8 +302,12 @@ template:
           kamers: *kamers
           wa: >
             {% set H = 0.17 %}
-            {% set P_INT = 0.4 %}
-            {% set A_ZON = 3.43 %}
+            {% set P_INT = 0.24 %}
+            {% set A_ZUID = 7.1 %}
+            {% set A_NOORD = 2.7 %}
+            {% set K_ZON = 2.0 %}
+            {% set GEVEL_ZUID = 170 %}
+            {% set GEVEL_NOORD = 350 %}
             {% set WTW_OFFSET = 0.36 %}
             {% set temps = kamers | map('state_attr', 'current_temperature')
                  | reject('none') | map('float') | list %}
@@ -174,12 +323,30 @@ template:
               {# Dichte screens: geen zonnewinst; onbekende stand telt als open. #}
               {% set pos = state_attr('cover.screens', 'current_position') %}
               {% set open = pos | float / 100 if is_number(pos) else 1 %}
-              {% set zon = A_ZON * (states('sensor.st_00125314_straling') | float(0)) / 1000 * open %}
+              {% set el = states('sensor.sun_solar_elevation') | float(-90) %}
+              {% set az = states('sensor.sun_solar_azimuth') | float(0) %}
+              {% set ghi = states('sensor.st_00125314_straling') | float(0) %}
+              {% set g = namespace(zuid=0, noord=0) %}
+              {% if el > 1 and ghi > 0 %}
+                {% set sh = sin(el * pi / 180) %}
+                {% set kt = [ghi / (1367 * sh), 1] | min %}
+                {% set fd = 1 - 0.09 * kt if kt <= 0.22 else 0.165 if kt > 0.8
+                     else 0.9511 - 0.1604 * kt + 4.388 * kt ** 2 - 16.638 * kt ** 3 + 12.336 * kt ** 4 %}
+                {% set dhi = ghi * fd %}
+                {% set dni = (ghi - dhi) / sh %}
+                {# Diffuus licht op een verticaal vlak plus 20% grondreflectie. #}
+                {% set rest = dhi * 0.5 + ghi * 0.1 %}
+                {% set g.zuid = dni * [cos(el * pi / 180) * cos((az - GEVEL_ZUID) * pi / 180), 0] | max + rest %}
+                {% set g.noord = dni * [cos(el * pi / 180) * cos((az - GEVEL_NOORD) * pi / 180), 0] | max + rest %}
+              {% endif %}
+              {% set zon = K_ZON * (A_ZUID * g.zuid * open + A_NOORD * g.noord) / 1000 %}
               {{ {
                    'ok': true,
                    'verlies': verlies | round(2),
                    'zon': zon | round(2),
                    'screens_open': (open * 100) | round(0) | int,
+                   'straling_zuid': g.zuid | round(0) | int,
+                   'straling_noord': g.noord | round(0) | int,
                    'vraag': (verlies - P_INT - zon) | round(2),
                    'binnen': t_in | round(1),
                    'binnenbron': bron,
@@ -213,7 +380,9 @@ template:
         attributes:
           zonnewinst_kw: "{{ wa.zon }}"
           screens_open_procent: "{{ wa.screens_open }}"
-          interne_warmte_kw: 0.4
+          straling_zuidgevel_wm2: "{{ wa.straling_zuid }}"
+          straling_noordgevel_wm2: "{{ wa.straling_noord }}"
+          interne_warmte_kw: 0.24
       - name: Binnentemperatuur huis
         unique_id: binnentemperatuur_huis
         unit_of_measurement: "°C"
