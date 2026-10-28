@@ -1,4 +1,4 @@
-# Version: 1.13.0
+# Version: 1.14.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Rekent uit hoe lang de warmte die het huis boven de minimumtemperatuur heeft
@@ -14,7 +14,9 @@
 #
 # sensor.dao_graaddagenfactor: degree_days_factor voor de Day Ahead Optimizer:
 # verwachte warmtevraag (met verwachte zon) per gewogen graaddag t.o.v. 16
-# graden voor de kalenderdag. Eén keer per dag om 00:01 berekend en de hele dag
+# graden voor de kalenderdag. De warmtevraag is per uur gesimuleerd vanaf de
+# binnentemperatuur om middernacht: zon van de middag dekt het verlies van de
+# nacht ervoor niet, alleen wat erna komt. Eén keer per dag om 00:01 berekend en de hele dag
 # vastgehouden; de DAO trekt zelf de al geproduceerde warmte af. Zet in de DAO-config "degree_days_factor":
 # "sensor.dao_graaddagenfactor". DAO_KALIBRATIE schaalt de factor als de DAO
 # structureel te veel of te weinig warmte blijkt in te plannen; DAO_MIN is een
@@ -39,6 +41,8 @@
 #   P_INT interne warmte (apparaten, mensen) in kW
 #   C     warmtecapaciteit van het huis in kWh per graad
 #   T_MIN onder deze gemiddelde binnentemperatuur is verwarming nodig
+#   T_MAX tot hier slaat het huis zonnewarmte op (DAO-factor); daarboven
+#         gaan de screens dicht of wordt gelucht
 #   Zonnewinst per gevel: de gemeten horizontale straling wordt gesplitst in
 #   direct en diffuus licht (Erbs) en omgerekend naar de straling op elke
 #   gevel, met de invalshoek van de zon. Zonnewinst in kW =
@@ -91,6 +95,7 @@ template:
                  'snowy': 0.2, 'snowy-rainy': 0.2, 'windy': 0.5,
                  'windy-variant': 0.4, 'exceptional': 0.3} %}
             {% set T_MIN = 21 %}
+            {% set T_MAX = 23 %}
             {% set WTW_OFFSET = 0.36 %}
             {% set DAO_REF = 16 %}
             {% set DAO_KALIBRATIE = 1.0 %}
@@ -123,7 +128,8 @@ template:
               {% set buf = C * (t_in - T_MIN) %}
               {% set tm = (t_in + T_MIN) / 2 %}
               {% set ns = namespace(t=t_in, uren=0 if buf <= 0 else none, uren0=0 if buf <= 0 else none,
-                   cum=0, cum0=0, t24=t_in, buiten24=0, uv24=0, zon24=0, gd24=0, vraag24=0, vraag24_0=0, n24=0) %}
+                   cum=0, cum0=0, t24=t_in, buiten24=0, uv24=0, zon24=0, gd24=0, vraag24=0, vraag24_0=0, n24=0,
+                   tv=t_in, tv0=t_in) %}
               {% for f in fl %}
                 {% set uv = f.uv_index | float(0) if f.uv_index is defined else 0 %}
                 {% set zon = K_ZON * ZON_PER_UV * UV_WEGING.get(f.condition, 0.4) * uv %}
@@ -144,8 +150,17 @@ template:
                   {% set ns.zon24 = ns.zon24 + zon %}
                   {% set ns.t24 = ns.t %}
                   {% set ns.gd24 = ns.gd24 + [DAO_REF - f.temperature | float, 0] | max / 24 %}
-                  {% set ns.vraag24 = ns.vraag24 + H * (T_MIN - f.temperature | float) - P_INT - zon %}
-                  {% set ns.vraag24_0 = ns.vraag24_0 + H * (T_MIN - f.temperature | float) - P_INT %}
+                  {# Warmtevraag per uur gesimuleerd: het huis koelt af vanaf de
+                     binnentemperatuur nu, warmte bijleveren zodra het onder
+                     T_MIN komt. Zon helpt pas vanaf het uur dat hij schijnt;
+                     overschot gaat de buffer in tot T_MAX (daarboven gaan de
+                     screens dicht / wordt gelucht). #}
+                  {% set ns.tv = ns.tv - (H * (ns.tv - f.temperature | float) - P_INT - zon) / C %}
+                  {% set ns.vraag24 = ns.vraag24 + [C * (T_MIN - ns.tv), 0] | max %}
+                  {% set ns.tv = [[ns.tv, T_MIN] | max, T_MAX] | min %}
+                  {% set ns.tv0 = ns.tv0 - (H * (ns.tv0 - f.temperature | float) - P_INT) / C %}
+                  {% set ns.vraag24_0 = ns.vraag24_0 + [C * (T_MIN - ns.tv0), 0] | max %}
+                  {% set ns.tv0 = [ns.tv0, T_MIN] | max %}
                   {% set ns.n24 = ns.n24 + 1 %}
                 {% endif %}
               {% endfor %}
