@@ -1,4 +1,4 @@
-# Version: 1.1.0
+# Version: 1.2.0
 blueprint:
   domain: automation
   name: "🔥 Warmtepomp - stooklijn (DAO + binnentemperatuur)"
@@ -121,6 +121,24 @@ blueprint:
           max: 5
           step: 0.5
           unit_of_measurement: "K"
+          mode: slider
+
+    plan_min_duration:
+      name: "Plan: minimale duur per stand"
+      description: >
+        De DAO plant per kwartier. Een nieuwe plan-aanpassing wordt pas
+        doorgevoerd als de vorige minstens zo lang staat, zodat de kleppen van
+        de vloerverwarming open zijn en de vloer echt opwarmt of afkoelt
+        voordat er weer omgeschakeld wordt. Geldt niet bij verwarming uit.
+        Werkt op de plan-helper als die is ingesteld, anders op de
+        stooklijncorrectie van de warmtepomp.
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 240
+          step: 15
+          unit_of_measurement: "min"
           mode: slider
 
     plan_helper:
@@ -315,6 +333,7 @@ variables:
   plan_max_up: !input plan_max_up
   plan_max_down: !input plan_max_down
   plan_helper: !input plan_helper
+  plan_min_duration: !input plan_min_duration
   adjustment_entity: !input adjustment_entity
   target_entity: !input target_entity
   heating_entities: !input heating_entities
@@ -340,11 +359,31 @@ variables:
   v_demand: >
     {% set d = states(demand_entity) %}
     {{ d | float if is_number(d) else 'none' }}
-  v_plan_adjustment: >
+  v_plan_raw: >
     {% if is_number(v_demand) %}
       {% set a = plan_gain | float * (v_plan_heat | float - [v_demand | float, 0] | max) %}
       {{ [[a, plan_max_up | float] | min, -(plan_max_down | float)] | max | round(1) }}
     {% else %}0{% endif %}
+  # Vasthouden: de vorige plan-aanpassing blijft staan tot hij de minimale
+  # duur heeft gestaan.
+  v_plan_hold_entity: "{{ plan_helper | first if plan_helper | count > 0 else target_entity }}"
+  v_plan_prev: >
+    {% if plan_helper | count > 0 %}
+      {% set v = states(v_plan_hold_entity) %}
+    {% else %}
+      {% set v = (states(target_entity) | float(0) - states(compensation_helper | first) | float(0))
+         if compensation_helper | count > 0 else states(target_entity) %}
+    {% endif %}
+    {{ v | float if is_number(v) else 'none' }}
+  v_plan_minutes: >
+    {% set st = states[v_plan_hold_entity] if v_plan_hold_entity else none %}
+    {{ ((now() - st.last_changed).total_seconds() / 60) | round(0) if st is not none else 9999 }}
+  v_plan_held: >
+    {{ v_heating_on | bool and is_number(v_plan_prev)
+       and (v_plan_prev | float - v_plan_raw | float) | abs >= 0.05
+       and v_plan_minutes | float < plan_min_duration | float }}
+  v_plan_adjustment: >
+    {{ v_plan_prev | float if v_plan_held | bool else v_plan_raw }}
   v_adjustment: >
     {% if source == 'plan' %}{{ v_plan_adjustment }}
     {% else %}
@@ -383,7 +422,9 @@ variables:
       {% set band = 'band ' ~ v_band_low ~ '-' ~ v_band_high ~ ' °C'
            ~ (' (setpoint ' ~ v_setpoint ~ ')' if is_number(v_setpoint) else ' (vast)') %}
       {% set temp = ('binnen ' ~ v_temperature ~ ' °C') if is_number(v_temperature) else 'binnentemperatuur onbekend' %}
-      {% set bron = ('plan ' ~ v_plan_heat ~ ' kW warmte vs vraag ' ~ v_demand ~ ' kW -> ') if source == 'plan' else 'prijs -> ' %}
+      {% set bron = ('plan ' ~ v_plan_heat ~ ' kW warmte vs vraag ' ~ v_demand ~ ' kW -> '
+           ~ (('vastgehouden (' ~ v_plan_raw ~ ' wacht, staat pas ' ~ v_plan_minutes ~ ' min) ') if v_plan_held | bool else ''))
+           if source == 'plan' else 'prijs -> ' %}
       {{ 'DAO ' ~ bron ~ v_adjustment ~ ' + compensatie ' ~ v_compensation ~ ' (' ~ temp ~ ', ' ~ band ~ ') = '
          ~ v_total ~ (' -> geschreven' if v_write | bool else ' -> ongewijzigd') }}
     {% endif %}
