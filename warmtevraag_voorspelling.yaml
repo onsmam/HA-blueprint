@@ -1,4 +1,4 @@
-# Version: 1.14.0
+# Version: 1.15.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Rekent uit hoe lang de warmte die het huis boven de minimumtemperatuur heeft
@@ -14,9 +14,11 @@
 #
 # sensor.dao_graaddagenfactor: degree_days_factor voor de Day Ahead Optimizer:
 # verwachte warmtevraag (met verwachte zon) per gewogen graaddag t.o.v. 16
-# graden voor de kalenderdag. De warmtevraag is per uur gesimuleerd vanaf de
-# binnentemperatuur om middernacht: zon van de middag dekt het verlies van de
-# nacht ervoor niet, alleen wat erna komt. Eén keer per dag om 00:01 berekend en de hele dag
+# graden voor de kalenderdag. De warmtevraag is per uur gesimuleerd vanaf
+# T_MIN: zon van de middag dekt het verlies van de nacht ervoor niet, alleen
+# wat erna komt. Warmte boven T_MIN om middernacht telt niet als buffer: de
+# thermostaten laten het huis niet uitzakken, dus de warmtepomp levert 's nachts
+# toch. Eén keer per dag om 00:01 berekend en de hele dag
 # vastgehouden; de DAO trekt zelf de al geproduceerde warmte af. Zet in de DAO-config "degree_days_factor":
 # "sensor.dao_graaddagenfactor". DAO_KALIBRATIE schaalt de factor als de DAO
 # structureel te veel of te weinig warmte blijkt in te plannen; DAO_MIN is een
@@ -129,7 +131,7 @@ template:
               {% set tm = (t_in + T_MIN) / 2 %}
               {% set ns = namespace(t=t_in, uren=0 if buf <= 0 else none, uren0=0 if buf <= 0 else none,
                    cum=0, cum0=0, t24=t_in, buiten24=0, uv24=0, zon24=0, gd24=0, vraag24=0, vraag24_0=0, n24=0,
-                   tv=t_in, tv0=t_in) %}
+                   tv=T_MIN, tv0=T_MIN) %}
               {% for f in fl %}
                 {% set uv = f.uv_index | float(0) if f.uv_index is defined else 0 %}
                 {% set zon = K_ZON * ZON_PER_UV * UV_WEGING.get(f.condition, 0.4) * uv %}
@@ -150,8 +152,9 @@ template:
                   {% set ns.zon24 = ns.zon24 + zon %}
                   {% set ns.t24 = ns.t %}
                   {% set ns.gd24 = ns.gd24 + [DAO_REF - f.temperature | float, 0] | max / 24 %}
-                  {# Warmtevraag per uur gesimuleerd: het huis koelt af vanaf de
-                     binnentemperatuur nu, warmte bijleveren zodra het onder
+                  {# Warmtevraag per uur gesimuleerd vanaf T_MIN (de thermostaten
+                     houden het huis op temperatuur, een buffer om middernacht
+                     wordt niet opgebruikt): warmte bijleveren zodra het onder
                      T_MIN komt. Zon helpt pas vanaf het uur dat hij schijnt;
                      overschot gaat de buffer in tot T_MAX (daarboven gaan de
                      screens dicht / wordt gelucht). #}
