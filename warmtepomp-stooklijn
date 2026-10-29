@@ -1,0 +1,350 @@
+# Version: 2.0.0
+blueprint:
+  domain: automation
+  name: "🔥 Warmtepomp - stooklijn volgt DAO-plan"
+  description: >
+    Laat de warmtepomp alleen stoken in de kwartieren die de Day Ahead
+    Optimizer (DAO) inplant. De DAO schrijft per kwartier het geplande
+    elektrische vermogen in 'entity hp power'. Staat daar niets gepland, dan
+    gaat de stooklijncorrectie naar de blokkeerwaarde (standaard -5 K): het
+    retour-doel zakt onder de retourtemperatuur van de vloer en de compressor
+    blijft stil. Is er wel iets gepland, dan gaat de correctie naar de
+    plan-waarde: minstens de looplijn (standaard 0 K) en hoger naarmate de DAO
+    meer warmte plant dan het huis nu verliest (bufferen in de vloer); warmt
+    de zon het huis al op, dan alleen de looplijn. Een stookperiode loopt
+    minstens de minimale duur, zodat de warmtepomp niet pendelt. Vangnet: zakt de binnentemperatuur onder
+    de ondergrens, dan wordt niet geblokkeerd. Staat de verwarming uit, dan gaat
+    de correctie naar 0. De prijsaanpassing van de DAO ('entity adjust heating
+    curve') wordt niet meer gebruikt. De variabele v_reason in de trace toont
+    waarom welke correctie gekozen is.
+
+  input:
+    planned_power_entity:
+      name: "⚡ Gepland vermogen van de DAO"
+      description: >
+        Entiteit waarin de DAO het geplande elektrische vermogen van de
+        warmtepomp voor het huidige kwartier schrijft ('entity hp power'), in
+        kW. Waarden boven 20 worden als W gelezen.
+      default: input_number.warmtepomp_gevraagd_vermogen
+      selector:
+        entity:
+          filter:
+            - domain: [input_number, number, sensor]
+
+    min_planned_power:
+      name: "Gepland vanaf"
+      description: Onder dit vermogen telt het kwartier als niet gepland.
+      default: 0.05
+      selector:
+        number:
+          min: 0.01
+          max: 1
+          step: 0.01
+          unit_of_measurement: "kW"
+          mode: box
+
+    target_entity:
+      name: "🎯 Stooklijncorrectie warmtepomp"
+      description: Number-entiteit van de warmtepomp waarin de correctie wordt geschreven.
+      default: number.luxtronik_281211_0164_heating_target_correction
+      selector:
+        entity:
+          filter:
+            - domain: [number, input_number]
+
+    heating_entities:
+      name: "🔥 Verwarming vrijgegeven"
+      description: >
+        Schakelaar of select die aangeeft dat de verwarming vrijgegeven is.
+        Elke status behalve off/unavailable/unknown telt als vrijgegeven.
+        Staat de verwarming uit, dan gaat de correctie naar 0.
+      default:
+        - select.luxtronik_281211_0164_heating_mode
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: [switch, select, input_select, input_boolean, binary_sensor]
+
+    block_correction:
+      name: "⛔ Correctie zonder plan (blokkeren)"
+      description: >
+        Correctie als de DAO niets plant. Moet het retour-doel ruim onder de
+        retourtemperatuur van de vloer brengen. Gemeten oktober: retour-doel
+        23-26 °C, vloerretour 25-26 °C; -5 K geeft 18-21 °C.
+      default: -5
+      selector:
+        number:
+          min: -5
+          max: 0
+          step: 0.5
+          unit_of_measurement: "K"
+          mode: slider
+
+    run_correction:
+      name: "▶️ Correctie bij plan (looplijn)"
+      description: Minimale correctie als de DAO warmte plant.
+      default: 0
+      selector:
+        number:
+          min: -2
+          max: 3
+          step: 0.5
+          unit_of_measurement: "K"
+          mode: slider
+
+    max_correction:
+      name: "Maximale correctie bij plan"
+      default: 3
+      selector:
+        number:
+          min: 0
+          max: 5
+          step: 0.5
+          unit_of_measurement: "K"
+          mode: slider
+
+    plan_gain:
+      name: "Bufferen: graden per kW"
+      description: >
+        Extra correctie per kW dat de geplande warmte (vermogen x COP) boven
+        de actuele warmtevraag ligt. Gemeten oktober: 1 K stooklijn geeft
+        ~0,4 kW meer warmte, dus ~2,5 K per kW. 0 = altijd de looplijn.
+      default: 2.5
+      selector:
+        number:
+          min: 0
+          max: 5
+          step: 0.1
+          unit_of_measurement: "K/kW"
+          mode: slider
+
+    cop_entity:
+      name: "COP warmtepomp"
+      description: >
+        Sensor met de actuele COP. Staat de warmtepomp stil, dan is die 0 en
+        geldt de vaste COP hieronder.
+      default: sensor.warmtepomp_cop
+      selector:
+        entity:
+          filter:
+            - domain: [sensor, input_number]
+
+    cop_fixed:
+      name: "Vaste COP (terugval)"
+      description: Gelijk aan de COP van de DAO-stages (7,5 bij 350 W).
+      default: 7.0
+      selector:
+        number:
+          min: 1
+          max: 10
+          step: 0.1
+          mode: slider
+
+    demand_entity:
+      name: "🏠 Actuele warmtevraag"
+      description: >
+        Wat het huis nu verliest, in kW (sensor.warmtevraag_actueel uit het
+        package). Onbeschikbaar: geen bufferen, alleen de looplijn.
+      default: sensor.warmtevraag_actueel
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+
+    min_duration:
+      name: "Minimale duur per stand"
+      description: >
+        Een stookperiode wordt pas geblokkeerd als de correctie minstens zo
+        lang staat; zo draait de warmtepomp niet maar een kwartier. Past bij
+        'min run length' van de DAO (1 uur). Starten gebeurt direct.
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 240
+          step: 15
+          unit_of_measurement: "min"
+          mode: slider
+
+    temperature_entity:
+      name: "🌡️ Binnentemperatuur (vangnet)"
+      default: sensor.binnentemperatuur_huis
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+
+    min_temperature:
+      name: "Vangnet: niet blokkeren onder"
+      description: >
+        Onder deze binnentemperatuur wordt niet geblokkeerd, ook als de DAO
+        niets plant; dan geldt de looplijn.
+      default: 20.5
+      selector:
+        number:
+          min: 15
+          max: 23
+          step: 0.1
+          unit_of_measurement: "°C"
+          mode: slider
+
+    thermostat_helper:
+      name: "Helper voor thermostaten (optioneel)"
+      description: >
+        input_number (-5..5, stap 0,1) met de correctie als er gestookt wordt
+        en 0 als er geblokkeerd wordt. Te gebruiken als 'Stooklijnaanpassing'
+        in de blueprint 'Thermostaten - bufferen', zodat de kleppen opengaan
+        als de DAO buffert in plaats van op de prijs.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: input_number
+
+mode: queued
+max: 3
+max_exceeded: silent
+
+trigger_variables:
+  tv_heating: !input heating_entities
+
+triggers:
+  - trigger: state
+    entity_id: !input planned_power_entity
+    id: plan
+  - trigger: template
+    id: heating
+    value_template: >
+      {{ tv_heating | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count > 0 }}
+  - trigger: template
+    id: heating
+    value_template: >
+      {{ tv_heating | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count == 0 }}
+  # Elk kwartier: een afgelopen minimale duur, het vangnet en de warmtevraag
+  # worden zo opgepakt.
+  - trigger: time_pattern
+    minutes: "/15"
+    id: interval
+  - trigger: homeassistant
+    event: start
+    id: start
+
+variables:
+  planned_power_entity: !input planned_power_entity
+  min_planned_power: !input min_planned_power
+  target_entity: !input target_entity
+  heating_entities: !input heating_entities
+  block_correction: !input block_correction
+  run_correction: !input run_correction
+  max_correction: !input max_correction
+  plan_gain: !input plan_gain
+  cop_entity: !input cop_entity
+  cop_fixed: !input cop_fixed
+  demand_entity: !input demand_entity
+  min_duration: !input min_duration
+  temperature_entity: !input temperature_entity
+  min_temperature: !input min_temperature
+  thermostat_helper: !input thermostat_helper
+
+  v_heating_on: >
+    {{ heating_entities | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count > 0 }}
+  v_power: >
+    {% set p = states(planned_power_entity) %}
+    {% set p = p | float if is_number(p) else 0 %}
+    {{ (p / 1000 if p > 20 else p) | round(3) }}
+  v_planned: "{{ v_power | float >= min_planned_power | float }}"
+  v_cop: >
+    {% set c = states(cop_entity) %}
+    {{ c | float if is_number(c) and c | float > 0 else cop_fixed | float }}
+  v_plan_heat: "{{ (v_power | float * v_cop | float) | round(2) }}"
+  v_demand: >
+    {% set d = states(demand_entity) %}
+    {{ d | float if is_number(d) else 'none' }}
+  v_temperature: >
+    {% set t = states(temperature_entity) %}
+    {{ t | float if is_number(t) else 'none' }}
+  v_safety: >
+    {{ is_number(v_temperature) and v_temperature | float < min_temperature | float }}
+  # Correctie als er gestookt wordt: looplijn plus bufferen als de DAO meer
+  # warmte plant dan het huis nu verliest. Warmt de zon het huis al op
+  # (vraag <= 0), dan niet extra bufferen: alleen de looplijn.
+  v_run: >
+    {% set extra = plan_gain | float * (v_plan_heat | float - v_demand | float)
+       if v_planned | bool and is_number(v_demand) and v_demand | float > 0 else 0 %}
+    {{ [[run_correction | float + [extra, 0] | max, max_correction | float] | min, run_correction | float] | max | round(1) }}
+  v_want_run: "{{ v_planned | bool or v_safety | bool }}"
+  v_current: >
+    {% set c = states(target_entity) %}
+    {{ c | float if is_number(c) else 'none' }}
+  v_blocked_now: >
+    {{ is_number(v_current) and v_current | float <= block_correction | float + 0.05 }}
+  v_minutes: >
+    {% set st = states[target_entity] %}
+    {{ ((now() - st.last_changed).total_seconds() / 60) | round(0) if st is not none else 9999 }}
+  # Vasthouden: een lopende stookperiode wordt pas na de minimale duur (sinds
+  # de laatste wijziging van de correctie) geblokkeerd. Starten gaat direct.
+  v_held: >
+    {{ v_heating_on | bool and is_number(v_current) and not v_blocked_now | bool
+       and not v_want_run | bool and v_minutes | float < min_duration | float }}
+  # Tijdens het stoken alleen bijsturen bij een nieuw plan (of start/verwarming),
+  # niet elk kwartier, zodat de minimale duur vanaf het plan telt.
+  v_keep_run: >
+    {{ v_heating_on | bool and v_want_run | bool and is_number(v_current)
+       and not v_blocked_now | bool and trigger.id == 'interval' }}
+  v_total: >
+    {% if not v_heating_on | bool %}{% set v = 0 %}
+    {% elif v_held | bool or v_keep_run | bool %}{% set v = v_current | float %}
+    {% elif v_want_run | bool %}{% set v = v_run | float %}
+    {% else %}{% set v = block_correction | float %}
+    {% endif %}
+    {% set stap = state_attr(target_entity, 'step') | float(0.1) %}
+    {% set v = [[v, state_attr(target_entity, 'min') | float(-5)] | max, state_attr(target_entity, 'max') | float(5)] | min %}
+    {{ ((v / stap) | round(0) * stap) | round(1) }}
+  v_write: >
+    {{ is_number(v_current) and (v_current | float - v_total | float) | abs >= 0.05 }}
+  v_helper_value: >
+    {{ [v_total | float, 0] | max if v_heating_on | bool and v_total | float > block_correction | float + 0.05 else 0 }}
+
+  v_reason: >
+    {% if not v_heating_on | bool %}verwarming uit -> correctie 0
+    {% else %}
+      {% set plan = 'plan ' ~ v_power ~ ' kW (' ~ v_plan_heat ~ ' kW warmte, vraag ' ~ v_demand ~ ' kW)' %}
+      {% if v_held | bool %}niets gepland -> stoken loopt door op {{ v_current }} (staat pas {{ v_minutes }} min)
+      {% elif v_keep_run | bool %}{{ plan }} -> stoken, correctie blijft {{ v_current }} tot een nieuw plan
+      {% elif v_planned | bool %}{{ plan }} -> stoken {{ v_run }}
+      {% elif v_safety | bool %}niets gepland, maar binnen {{ v_temperature }} < {{ min_temperature }} °C -> vangnet {{ v_run }}
+      {% else %}niets gepland -> blokkeren {{ block_correction }}
+      {% endif %}
+    {% endif %}
+    = {{ v_total }}{{ ' -> geschreven' if v_write | bool else ' -> ongewijzigd' }}
+
+actions:
+  - if:
+      - condition: template
+        alias: "Warmtepomp bereikbaar"
+        value_template: "{{ is_number(v_current) }}"
+    then:
+      - if:
+          - condition: template
+            alias: "Thermostaat-helper ingesteld en gewijzigd"
+            value_template: >
+              {{ thermostat_helper | count > 0
+                 and states(thermostat_helper | first) | float(99) != v_helper_value | float }}
+        then:
+          - action: input_number.set_value
+            target:
+              entity_id: "{{ thermostat_helper | first }}"
+            data:
+              value: "{{ v_helper_value }}"
+      - if:
+          - condition: template
+            alias: "Correctie warmtepomp moet wijzigen"
+            value_template: "{{ v_write | bool }}"
+        then:
+          - action: "{{ target_entity.split('.')[0] }}.set_value"
+            target:
+              entity_id: "{{ target_entity }}"
+            data:
+              value: "{{ v_total }}"
