@@ -1,4 +1,4 @@
-# Version: 1.1.0
+# Version: 1.2.0
 blueprint:
   domain: automation
   name: "🌡️ Thermostaten - bufferen met Day Ahead Optimizer"
@@ -39,7 +39,10 @@ blueprint:
       description: >
         De entiteit waarin de DAO de stooklijnaanpassing schrijft
         ('entity adjust heating curve'), in K. Positief = goedkoop (bufferen),
-        negatief = duur.
+        negatief = duur. Volgt de stooklijn het warmteplan van de DAO (blueprint
+        'Warmtepomp - stooklijn', bron DAO-plan), kies dan de plan-helper
+        daarvan (bijv. input_number.stooklijn_plan): dan bufferen de
+        thermostaten alleen als de DAO er ook warmte voor inplant.
       default: input_number.stooklijn_aanpassing
       selector:
         entity:

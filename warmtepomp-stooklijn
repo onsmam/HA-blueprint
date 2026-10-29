@@ -1,10 +1,18 @@
-# Version: 1.0.0
+# Version: 1.1.0
 blueprint:
   domain: automation
   name: "🔥 Warmtepomp - stooklijn (DAO + binnentemperatuur)"
   description: >
-    Schrijft de stooklijncorrectie naar de warmtepomp: de prijsaanpassing van
-    de Day Ahead Optimizer (DAO) plus een compensatie op de binnentemperatuur.
+    Schrijft de stooklijncorrectie naar de warmtepomp: de aanpassing van de
+    Day Ahead Optimizer (DAO) plus een compensatie op de binnentemperatuur.
+    De aanpassing volgt het warmteplan van de DAO (bron 'DAO-plan'): de DAO
+    verdeelt de warmte van de dag (graaddagenfactor x graaddagen min al
+    geproduceerd) over de goedkoopste kwartieren en zet het geplande
+    vermogen in 'entity hp power'. Plant de DAO meer warmte dan het huis nu
+    verliest, dan gaat de stooklijn omhoog (bufferen); plant hij minder of
+    niets, dan omlaag. Met bron 'DAO-prijs' wordt de prijsaanpassing van de
+    DAO ('entity adjust heating curve') gebruikt; die kijkt alleen naar de
+    prijs t.o.v. het daggemiddelde, niet naar de warmtebehoefte.
     De compensatie werkt alleen buiten een comfortband, zodat de DAO binnen de
     band vrij kan voorstoken of uitstellen. De band ligt rond het actuele
     setpoint van een referentiethermostaat; verhoogt de blueprint
@@ -18,11 +26,121 @@ blueprint:
     variabele v_reason in de trace toont de opbouw van de correctie.
 
   input:
+    source:
+      name: "📋 Bron van de aanpassing"
+      description: >
+        DAO-plan: stooklijn volgt het geplande vermogen van de DAO (warmte op de
+        goedkoopste momenten, alleen zoveel als nodig is). DAO-prijs: de
+        prijsaanpassing van de DAO.
+      default: plan
+      selector:
+        select:
+          options:
+            - label: DAO-plan (gepland vermogen)
+              value: plan
+            - label: DAO-prijs (stooklijnaanpassing)
+              value: price
+
+    planned_power_entity:
+      name: "⚡ Gepland vermogen van de DAO"
+      description: >
+        De entiteit waarin de DAO het geplande elektrische vermogen van de
+        warmtepomp voor het huidige kwartier schrijft ('entity hp power'), in
+        kW (waarden boven 20 worden als W gelezen).
+      default: input_number.warmtepomp_gevraagd_vermogen
+      selector:
+        entity:
+          filter:
+            - domain: [input_number, number, sensor]
+
+    cop_entity:
+      name: "COP warmtepomp"
+      description: >
+        Sensor met de actuele COP ('entity hp cop' van de DAO). Geplande warmte =
+        gepland vermogen x COP. Onbeschikbaar: de vaste COP hieronder.
+      default: sensor.warmtepomp_cop
+      selector:
+        entity:
+          filter:
+            - domain: [sensor, input_number]
+
+    cop_fixed:
+      name: "Vaste COP (terugval)"
+      default: 5.5
+      selector:
+        number:
+          min: 1
+          max: 10
+          step: 0.1
+          mode: slider
+
+    demand_entity:
+      name: "🏠 Actuele warmtevraag"
+      description: >
+        Wat het huis nu verliest, in kW (sensor.warmtevraag_actueel uit het
+        package). Geplande warmte boven deze waarde wordt gebufferd.
+      default: sensor.warmtevraag_actueel
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+
+    plan_gain:
+      name: "Stooklijn per kW"
+      description: >
+        Graden stooklijnverschuiving per kW verschil tussen geplande warmte en
+        warmtevraag. Gemeten in oktober: 1 K stooklijn geeft ~0,4 kW meer
+        warmte, dus ~2,5 K per kW.
+      default: 2.5
+      selector:
+        number:
+          min: 0.5
+          max: 5
+          step: 0.1
+          unit_of_measurement: "K/kW"
+          mode: slider
+
+    plan_max_up:
+      name: "Plan: maximaal omhoog"
+      default: 3
+      selector:
+        number:
+          min: 0
+          max: 5
+          step: 0.5
+          unit_of_measurement: "K"
+          mode: slider
+
+    plan_max_down:
+      name: "Plan: maximaal omlaag"
+      description: Als de DAO niets plant; de thermostaten blijven het vangnet.
+      default: 2
+      selector:
+        number:
+          min: 0
+          max: 5
+          step: 0.5
+          unit_of_measurement: "K"
+          mode: slider
+
+    plan_helper:
+      name: "Helper plan-aanpassing (optioneel)"
+      description: >
+        input_number (-5..5, stap 0,1) die de aanpassing uit het plan bijhoudt.
+        Gebruik deze als 'Stooklijnaanpassing' in de blueprint 'Thermostaten -
+        bufferen met Day Ahead Optimizer', zodat de setpoints het plan volgen.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: input_number
+
     adjustment_entity:
       name: "💶 Stooklijnaanpassing van de DAO"
       description: >
-        De entiteit waarin de DAO de stooklijnaanpassing schrijft
-        ('entity adjust heating curve'), in K.
+        Alleen bij bron DAO-prijs: de entiteit waarin de DAO de
+        stooklijnaanpassing schrijft ('entity adjust heating curve'), in K.
       default: input_number.stooklijn_aanpassing
       selector:
         entity:
@@ -167,6 +285,9 @@ trigger:
   - platform: state
     entity_id: !input adjustment_entity
     id: dao
+  - platform: state
+    entity_id: !input planned_power_entity
+    id: dao
   - platform: template
     id: heating
     value_template: >
@@ -185,6 +306,15 @@ trigger:
     id: start
 
 variables:
+  source: !input source
+  planned_power_entity: !input planned_power_entity
+  cop_entity: !input cop_entity
+  cop_fixed: !input cop_fixed
+  demand_entity: !input demand_entity
+  plan_gain: !input plan_gain
+  plan_max_up: !input plan_max_up
+  plan_max_down: !input plan_max_down
+  plan_helper: !input plan_helper
   adjustment_entity: !input adjustment_entity
   target_entity: !input target_entity
   heating_entities: !input heating_entities
@@ -200,9 +330,27 @@ variables:
 
   v_heating_on: >
     {{ heating_entities | reject('is_state', ['off', 'unavailable', 'unknown']) | list | count > 0 }}
+  v_plan_heat: >
+    {% set p = states(planned_power_entity) %}
+    {% set p = p | float if is_number(p) else 0 %}
+    {% set p = p / 1000 if p > 20 else p %}
+    {% set c = states(cop_entity) %}
+    {% set c = c | float if is_number(c) and c | float > 0 else cop_fixed | float %}
+    {{ (p * c) | round(2) }}
+  v_demand: >
+    {% set d = states(demand_entity) %}
+    {{ d | float if is_number(d) else 'none' }}
+  v_plan_adjustment: >
+    {% if is_number(v_demand) %}
+      {% set a = plan_gain | float * (v_plan_heat | float - [v_demand | float, 0] | max) %}
+      {{ [[a, plan_max_up | float] | min, -(plan_max_down | float)] | max | round(1) }}
+    {% else %}0{% endif %}
   v_adjustment: >
-    {% set a = states(adjustment_entity) %}
-    {{ a | float if is_number(a) else 0 }}
+    {% if source == 'plan' %}{{ v_plan_adjustment }}
+    {% else %}
+      {% set a = states(adjustment_entity) %}
+      {{ a | float if is_number(a) else 0 }}
+    {% endif %}
   v_temperature: >
     {% set t = states(temperature_entity) %}
     {{ t | float if is_number(t) else 'none' }}
@@ -235,7 +383,8 @@ variables:
       {% set band = 'band ' ~ v_band_low ~ '-' ~ v_band_high ~ ' °C'
            ~ (' (setpoint ' ~ v_setpoint ~ ')' if is_number(v_setpoint) else ' (vast)') %}
       {% set temp = ('binnen ' ~ v_temperature ~ ' °C') if is_number(v_temperature) else 'binnentemperatuur onbekend' %}
-      {{ 'DAO ' ~ v_adjustment ~ ' + compensatie ' ~ v_compensation ~ ' (' ~ temp ~ ', ' ~ band ~ ') = '
+      {% set bron = ('plan ' ~ v_plan_heat ~ ' kW warmte vs vraag ' ~ v_demand ~ ' kW -> ') if source == 'plan' else 'prijs -> ' %}
+      {{ 'DAO ' ~ bron ~ v_adjustment ~ ' + compensatie ' ~ v_compensation ~ ' (' ~ temp ~ ', ' ~ band ~ ') = '
          ~ v_total ~ (' -> geschreven' if v_write | bool else ' -> ongewijzigd') }}
     {% endif %}
 
@@ -257,6 +406,18 @@ action:
               entity_id: "{{ compensation_helper | first }}"
             data:
               value: "{{ v_compensation }}"
+      - if:
+          - condition: template
+            alias: "Plan-helper ingesteld en gewijzigd"
+            value_template: >
+              {{ plan_helper | count > 0
+                 and states(plan_helper | first) | float(99) != (v_plan_adjustment | float if v_heating_on | bool else 0) }}
+        then:
+          - service: input_number.set_value
+            target:
+              entity_id: "{{ plan_helper | first }}"
+            data:
+              value: "{{ v_plan_adjustment | float if v_heating_on | bool else 0 }}"
       - if:
           - condition: template
             alias: "Totaal-helper ingesteld en gewijzigd"
