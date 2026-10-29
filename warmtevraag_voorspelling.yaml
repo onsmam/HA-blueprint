@@ -1,4 +1,4 @@
-# Version: 1.16.0
+# Version: 1.17.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Rekent uit hoe lang de warmte die het huis boven de minimumtemperatuur heeft
@@ -11,17 +11,6 @@
 #   binary_sensor.zonnewarmte_nuttig aan. Die kan de warmtemodus van de
 #   blueprint 'Zonwering multi-gevel' aansturen. Hier telt de verwachte zon
 #   bewust niet mee: die komt alleen binnen als de screens open blijven.
-#
-# sensor.dao_graaddagenfactor: degree_days_factor voor de Day Ahead Optimizer
-# (kWh per gewogen graaddag t.o.v. 16 graden). Vaste basis die alleen
-# meebeweegt met de verwachte wind en zon van de komende 24 uur:
-#   factor = DAO_BASIS x (1 + DAO_WIND x (wind - DAO_WIND_REF))
-#                      x (1 - DAO_ZON x (zonnewinst - DAO_ZON_REF))
-# begrensd tussen DAO_MIN en DAO_MAX. Meer wind dan normaal: hoger; meer zon
-# dan normaal: lager. Eén keer per dag om 00:01 berekend en de hele dag
-# vastgehouden; de DAO trekt zelf de al geproduceerde warmte af. Zet in de
-# DAO-config "degree_days_factor": "sensor.dao_graaddagenfactor". Plant de DAO
-# structureel te veel of te weinig, pas dan DAO_BASIS aan.
 #
 # Daarnaast: sensor.warmteverlies_actueel (kW die het huis nu verliest) en
 # sensor.warmtevraag_actueel (dat verlies min interne warmte en gemeten
@@ -95,14 +84,6 @@ template:
                  'windy-variant': 0.4, 'exceptional': 0.3} %}
             {% set T_MIN = 21 %}
             {% set WTW_OFFSET = 0.36 %}
-            {% set DAO_REF = 16 %}
-            {% set DAO_BASIS = 4.0 %}
-            {% set DAO_WIND = 0.05 %}
-            {% set DAO_WIND_REF = 3 %}
-            {% set DAO_ZON = 0.01 %}
-            {% set DAO_ZON_REF = 25 %}
-            {% set DAO_MIN = 2 %}
-            {% set DAO_MAX = 6 %}
             {% set rooms = [
                  'climate.woonkamer', 'climate.keuken', 'climate.hal',
                  'climate.badkamer', 'climate.masterbedroom', 'climate.sophie',
@@ -131,7 +112,7 @@ template:
               {% set buf = C * (t_in - T_MIN) %}
               {% set tm = (t_in + T_MIN) / 2 %}
               {% set ns = namespace(t=t_in, uren=0 if buf <= 0 else none, uren0=0 if buf <= 0 else none,
-                   cum=0, cum0=0, t24=t_in, buiten24=0, uv24=0, zon24=0, gd24=0, wind24=0, n24=0) %}
+                   cum=0, cum0=0, t24=t_in, buiten24=0, uv24=0, zon24=0) %}
               {% for f in fl %}
                 {% set uv = f.uv_index | float(0) if f.uv_index is defined else 0 %}
                 {% set zon = K_ZON * ZON_PER_UV * UV_WEGING.get(f.condition, 0.4) * uv %}
@@ -151,29 +132,9 @@ template:
                   {% set ns.uv24 = ns.uv24 + uv %}
                   {% set ns.zon24 = ns.zon24 + zon %}
                   {% set ns.t24 = ns.t %}
-                  {% set ns.gd24 = ns.gd24 + [DAO_REF - f.temperature | float, 0] | max / 24 %}
-                  {% set ns.wind24 = ns.wind24 + f.wind_speed | float(0) / 3.6 %}
-                  {% set ns.n24 = ns.n24 + 1 %}
                 {% endif %}
               {% endfor %}
               {% set buiten24 = ns.buiten24 / ([fl | count, 24] | min) %}
-              {# Factor voor de Day Ahead Optimizer over de komende 24 uur:
-                 DAO_BASIS, hoger bij meer wind en lager bij meer zon dan
-                 normaal (wind in m/s, zon als verwachte zonnewinst in kWh).
-                 sensor.dao_graaddagenfactor neemt deze waarde om middernacht
-                 over (dan is het de kalenderdag) en houdt hem de hele dag vast.
-                 Graaddagen gewogen zoals KNMI (nov-feb 1,1, mrt/okt 1,0,
-                 apr-sep 0,8), alleen voor de warmtevraag in kWh. #}
-              {% set n = [ns.n24, 1] | max %}
-              {% set wind24 = ns.wind24 / n %}
-              {% set zon24 = ns.zon24 * 24 / n %}
-              {% set m = now().month %}
-              {% set weging = 1.1 if m in [11, 12, 1, 2] else 1.0 if m in [3, 10] else 0.8 %}
-              {% set gd24w = ns.gd24 * 24 / n * weging %}
-              {% set f_wind = 1 + DAO_WIND * (wind24 - DAO_WIND_REF) %}
-              {% set f_zon = 1 - DAO_ZON * (zon24 - DAO_ZON_REF) %}
-              {% set dao = [[DAO_BASIS * f_wind * f_zon, DAO_MIN] | max, DAO_MAX] | min %}
-              {% set dao0 = [[DAO_BASIS * f_wind, DAO_MIN] | max, DAO_MAX] | min %}
               {{ {
                    'ok': true,
                    'uren': (ns.uren | round(0) | int) if ns.uren is not none else fl | count,
@@ -183,12 +144,6 @@ template:
                    'binnenbron': bron,
                    'binnen_over_24u': ns.t24 | round(1),
                    'buiten_gem_24u': buiten24 | round(1),
-                   'warmtevraag_24u_kwh': (dao * gd24w) | round(1),
-                   'dao_factor': dao | round(2),
-                   'dao_factor0': dao0 | round(2),
-                   'graaddagen_24u': gd24w | round(2),
-                   'wind_gem_24u': wind24 | round(1),
-                   'weging': weging,
                    'uv_uren_24u': ns.uv24 | round(1),
                    'zonnewinst_24u_kwh': ns.zon24 | round(1),
                    'buffer_kwh': (C * (t_in - T_MIN)) | round(1),
@@ -209,73 +164,10 @@ template:
           binnentemperatuur_bron: "{{ wv.binnenbron }}"
           binnentemperatuur_over_24u: "{{ wv.binnen_over_24u }}"
           buitentemperatuur_gem_24u: "{{ wv.buiten_gem_24u }}"
-          warmtevraag_24u_kwh: "{{ wv.warmtevraag_24u_kwh }}"
           buffer_boven_minimum_kwh: "{{ wv.buffer_kwh }}"
           lengte_verwachting_uren: "{{ wv.verwachting_uren }}"
           uv_uren_24u: "{{ wv.uv_uren_24u }}"
           zonnewinst_24u_kwh: "{{ wv.zonnewinst_24u_kwh }}"
-          wind_gem_24u: "{{ wv.wind_gem_24u }}"
-          dao_factor_24u: "{{ wv.dao_factor }}"
-          dao_factor_24u_zonder_zon: "{{ wv.dao_factor0 }}"
-          gewogen_graaddagen_24u: "{{ wv.graaddagen_24u }}"
-          graaddagen_weging: "{{ wv.weging }}"
-
-  # Voor de Day Ahead Optimizer: degree_days_factor als sensor. Eén keer per dag,
-  # om 00:01, wordt de 24-uursfactor van de voorspelling overgenomen (die is om
-  # 00:00 berekend, dus voor de kalenderdag waarop de DAO zijn graaddagen en
-  # warmtevraag reset) en de rest van de dag vastgehouden. Na een herstart blijft
-  # de waarde behouden; alleen als er nog geen waarde is, wordt hij direct gevuld.
-  - trigger:
-      - trigger: time
-        at: "00:01:00"
-        id: middernacht
-      - trigger: state
-        entity_id: sensor.uren_tot_warmtevraag
-        attribute: dao_factor_24u
-        id: eerste_waarde
-    sensor:
-      - name: DAO graaddagenfactor
-        unique_id: dao_graaddagenfactor
-        unit_of_measurement: "kWh/Kd"
-        state_class: measurement
-        icon: mdi:calculator-variant-outline
-        state: >
-          {% set nieuw = state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u') %}
-          {% if is_number(nieuw) and (trigger.id == 'middernacht' or not is_number(this.state)) %}
-            {{ nieuw }}
-          {% else %}
-            {{ this.state }}
-          {% endif %}
-        attributes:
-          berekend_op: >
-            {% set nieuw = state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u') %}
-            {{ now().isoformat() if is_number(nieuw) and (trigger.id == 'middernacht' or not is_number(this.state))
-               else this.attributes.get('berekend_op') }}
-          factor_zonder_zon: >
-            {% set nieuw = state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u') %}
-            {{ state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u_zonder_zon')
-               if is_number(nieuw) and (trigger.id == 'middernacht' or not is_number(this.state))
-               else this.attributes.get('factor_zonder_zon') }}
-          gewogen_graaddagen: >
-            {% set nieuw = state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u') %}
-            {{ state_attr('sensor.uren_tot_warmtevraag', 'gewogen_graaddagen_24u')
-               if is_number(nieuw) and (trigger.id == 'middernacht' or not is_number(this.state))
-               else this.attributes.get('gewogen_graaddagen') }}
-          warmtevraag_kwh: >
-            {% set nieuw = state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u') %}
-            {{ state_attr('sensor.uren_tot_warmtevraag', 'warmtevraag_24u_kwh')
-               if is_number(nieuw) and (trigger.id == 'middernacht' or not is_number(this.state))
-               else this.attributes.get('warmtevraag_kwh') }}
-          wind_gem: >
-            {% set nieuw = state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u') %}
-            {{ state_attr('sensor.uren_tot_warmtevraag', 'wind_gem_24u')
-               if is_number(nieuw) and (trigger.id == 'middernacht' or not is_number(this.state))
-               else this.attributes.get('wind_gem') }}
-          zonnewinst_kwh: >
-            {% set nieuw = state_attr('sensor.uren_tot_warmtevraag', 'dao_factor_24u') %}
-            {{ state_attr('sensor.uren_tot_warmtevraag', 'zonnewinst_24u_kwh')
-               if is_number(nieuw) and (trigger.id == 'middernacht' or not is_number(this.state))
-               else this.attributes.get('zonnewinst_kwh') }}
 
   - binary_sensor:
       # Aan als het huis zonder verwarming en zonder zon binnen HORIZON uur
