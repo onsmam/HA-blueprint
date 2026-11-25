@@ -1,4 +1,4 @@
-# Version: 1.17.0
+# Version: 1.18.0
 # Warmtevraag-voorspelling (Home Assistant package)
 #
 # Rekent uit hoe lang de warmte die het huis boven de minimumtemperatuur heeft
@@ -24,10 +24,13 @@
 #     packages: !include_dir_named packages
 # of kopieer het template:-blok naar configuration.yaml.
 #
-# Huismodel, gefit op 12-19 oktober met de warmtepomp uit. Die dagen bepalen
-# alleen de verhoudingen (afkoeltijd C/H ~235 uur); H komt uit de winterdata en
-# wordt herzien met de warmtemeter zodra de warmtepomp een tijd draait:
-#   H     warmteverlies in kW per graad verschil binnen-buiten
+# Huismodel, gefit op 12-19 oktober met de warmtepomp uit (verhoudingen, zon)
+# en getoetst met de warmtemeter op 2-24 november (23 dagen warmtepomp aan):
+# K_ZON 2,0 en C ~40-44 bevestigd, H bijgesteld.
+#   H     warmteverlies in kW per graad verschil binnen-buiten. Hangt af van
+#         de buitentemperatuurbron: de WTW-buitensensor (actueel) meet ~1,5
+#         graad warmer dan de Tempest en de weersverwachting, dus
+#         H = 0,18 bij de WTW-sensor en H = 0,16 bij de weersverwachting
 #   P_INT interne warmte (apparaten, mensen) in kW
 #   C     warmtecapaciteit van het huis in kWh per graad
 #   T_MIN onder deze gemiddelde binnentemperatuur is verwarming nodig
@@ -71,7 +74,7 @@ template:
         response_variable: fc
       - variables:
           wv: >
-            {% set H = 0.17 %}
+            {% set H = 0.16 %}
             {% set P_INT = 0.24 %}
             {% set C = 40 %}
             {% set K_ZON = 2.0 %}
@@ -186,8 +189,9 @@ template:
           # Uren zonder zon; de zonwering-blueprint toont dit in de trace.
           uren_tot_warmtevraag: "{{ state_attr('sensor.uren_tot_warmtevraag', 'uren_zonder_zon') }}"
 
-  # Actueel warmteverlies en warmtevraag met hetzelfde huismodel (houd H en
-  # P_INT gelijk aan de voorspelling hierboven).
+  # Actueel warmteverlies en warmtevraag met hetzelfde huismodel (houd P_INT
+  # en K_ZON gelijk aan de voorspelling hierboven; H is hier 0,18 omdat de
+  # WTW-buitensensor warmer meet dan de weersverwachting).
   - trigger:
       - trigger: state
         entity_id:
@@ -215,7 +219,7 @@ template:
       - variables:
           kamers: *kamers
           wa: >
-            {% set H = 0.17 %}
+            {% set H = 0.18 %}
             {% set P_INT = 0.24 %}
             {% set A_ZUID = 7.1 %}
             {% set A_NOORD = 2.7 %}
